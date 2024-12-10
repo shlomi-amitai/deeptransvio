@@ -182,6 +182,172 @@ class Pose_RNN(nn.Module):
         return pose, hc
 
 
+class AdaptiveTransformerPoseEstimator(nn.Module):
+    def __init__(self, opt):
+        super().__init__()
+
+        # Key parameters from the original RNN
+        f_len = opt.v_f_len + opt.i_f_len
+        rnn_hidden_size = opt.rnn_hidden_size
+
+        # Input projection
+        self.input_proj = nn.Sequential(
+            nn.Linear(f_len, rnn_hidden_size),
+            nn.LayerNorm(rnn_hidden_size),
+            nn.GELU()
+        )
+
+        # Positional encoding
+        self.pos_encoding = nn.Parameter(torch.randn(1, 500, rnn_hidden_size))  # Large max sequence length
+
+        # Transformer encoder
+        self.transformer_encoder = nn.TransformerEncoder(
+            nn.TransformerEncoderLayer(
+                d_model=rnn_hidden_size,
+                nhead=8,
+                dim_feedforward=rnn_hidden_size * 4,
+                dropout=opt.rnn_dropout_between,
+                activation='gelu'
+            ),
+            num_layers=2
+        )
+
+        self.dropout = nn.Dropout(opt.rnn_dropout_out)
+
+        # Regression head
+        self.regressor = nn.Sequential(
+            nn.Linear(rnn_hidden_size, 128),
+            nn.LeakyReLU(0.1, inplace=True),
+            nn.Linear(128, 6)
+        )
+
+        # Cache for sequential processing
+        self.cached_encodings = None
+
+    def forward(self, fused, dec, step, reset_cache=False):
+        batch_size, seq_len, feature_size = fused.size()
+
+        # Feature projection
+        x = self.input_proj(fused)
+
+        # Positional encoding
+        pos_enc = self.pos_encoding[:, :seq_len, :]
+        x = x + pos_enc
+
+        # Reset cache if starting a new sequence
+        if reset_cache or self.cached_encodings is None:
+            self.cached_encodings = torch.zeros(batch_size, 0, x.size(-1), device=x.device)
+
+        # Concatenate cached encodings with current input
+        x = torch.cat([self.cached_encodings, x], dim=1)
+
+        # Update cache
+        self.cached_encodings = x.detach()
+
+        # Apply Transformer
+        x = self.transformer_encoder(x)
+
+        # Use the last token for regression
+        last_token = x[:, -1, :]
+        pose = self.regressor(last_token)
+
+        return pose, self.cached_encodings
+
+
+# shlomia alternative pose transformer
+class AdaptiveTransformerPoseEstimator(nn.Module):
+    def __init__(self, opt):
+        super().__init__()
+
+        # Key parameters from the original RNN
+        f_len = opt.v_f_len + opt.i_f_len
+        rnn_hidden_size = opt.rnn_hidden_size
+
+        # Input projection to match original RNN's input size
+        self.input_proj = nn.Sequential(
+            nn.Linear(f_len, rnn_hidden_size),
+            nn.LayerNorm(rnn_hidden_size),
+            nn.GELU()
+        )
+
+        # Positional encoding
+        self.pos_encoding = nn.Parameter(torch.randn(1, 100, rnn_hidden_size))
+
+        # Transformer encoder
+        self.transformer_encoder = nn.TransformerEncoder(
+            nn.TransformerEncoderLayer(
+                d_model=rnn_hidden_size,
+                nhead=8,
+                dim_feedforward=rnn_hidden_size * 4,
+                dropout=opt.rnn_dropout_between,
+                activation='gelu'
+            ),
+            num_layers=2
+        )
+
+        # Dropout (mimicking original RNN's dropout)
+        self.dropout = nn.Dropout(opt.rnn_dropout_out)
+
+        # Regression head (similar to original RNN)
+        self.regressor = nn.Sequential(
+            nn.Linear(rnn_hidden_size, 128),
+            nn.LeakyReLU(0.1, inplace=True),
+            nn.Linear(128, 6)
+        )
+
+        # Hidden state projection (to maintain compatibility)
+        self.hidden_proj = nn.Linear(rnn_hidden_size, rnn_hidden_size)
+
+    def forward(self, fused, fused_alter, dec, prev=None):
+        """
+        Mimics the original Pose_RNN forward method
+
+        Args:
+        - fused: Primary fused features
+        - fused_alter: Alternative features (zero padding or alternative input)
+        - dec: Decision tensor for feature selection
+        - prev: Previous hidden state (optional)
+
+        Returns:
+        - pose: Estimated pose
+        - hidden state
+        """
+        batch_size = fused.size(0)
+        seq_len = fused.size(1)
+
+        # Feature selection (matching original implementation)
+        if fused_alter is not None:
+            v_in = fused * dec[:, :, :1] + fused_alter * dec[:, :, -1:]
+        else:
+            v_in = fused
+
+        # Reshape for transformer (if needed)
+        v_in = v_in.view(batch_size * seq_len, v_in.size(2))
+
+        # Project input
+        x = self.input_proj(v_in)
+
+        # Add positional encoding
+        pos_enc = self.pos_encoding[:, :x.size(0), :]
+        x = x + pos_enc
+
+        # Transformer encoding
+        x = self.transformer_encoder(x)
+
+        # Dropout
+        x = self.dropout(x)
+
+        # Pose regression
+        pose = self.regressor(x)
+
+        # Reshape back to original sequence
+        pose = pose.view(batch_size, seq_len, 6)
+
+        # Hidden state projection (maintaining RNN-like compatibility)
+        hidden = self.hidden_proj(x[-1:])  # Use last transformer output
+
+        return pose, (hidden, hidden)  # Mimic LSTM hidden state tuple
+
 
 class DeepVIO(nn.Module):
     def __init__(self, opt):
@@ -189,6 +355,7 @@ class DeepVIO(nn.Module):
 
         self.Feature_net = Encoder(opt)
         self.Pose_net = Pose_RNN(opt)
+        # self.Pose_net = AdaptiveTransformerPoseEstimator(opt) # shlomia change
         self.Policy_net = PolicyNet(opt)
         self.opt = opt
         
