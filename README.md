@@ -1,4 +1,4 @@
-# Visual-Selective-VIO (ECCV 2022)
+# re-implementation of Visual-Selective-VIO (ECCV 2022)
 
 This repository contains the codes for [Efficient Deep Visual and Inertial Odometry with Adaptive Visual Modality Selection (ECCV '22)](https://arxiv.org/pdf/2205.06187.pdf). 
 
