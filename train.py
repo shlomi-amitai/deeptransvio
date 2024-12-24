@@ -4,7 +4,7 @@ import torch
 import logging
 from path import Path
 from utils import custom_transform
-from dataset.KITTI_dataset import KITTI
+from dataset.KITTI_dataset import KITTI, KITTISmallDataset
 from model import DeepVIO
 from collections import defaultdict
 from utils.kitti_eval import KITTI_tester
@@ -53,7 +53,7 @@ parser.add_argument('--pretrain', type=str, default=None, help='path to the pret
 parser.add_argument('--hflip', default=False, action='store_true', help='whether to use horizonal flipping as augmentation')
 parser.add_argument('--color', default=False, action='store_true', help='whether to use color augmentations')
 
-parser.add_argument('--print_frequency', type=int, default=10, help='print frequency for loss values')
+parser.add_argument('--print_frequency', type=int, default=2, help='print frequency for loss values')
 parser.add_argument('--weighted', default=False, action='store_true', help='whether to use weighted sum')
 
 args = parser.parse_args()

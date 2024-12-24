@@ -222,3 +222,105 @@ def saveSequence(poses, file_name):
             pose = pose.flatten()[:12]
             f.write(' '.join([str(r) for r in pose]))
             f.write('\n')
+
+
+
+import matplotlib.pyplot as plt
+import numpy as np
+from datetime import datetime
+import os
+
+
+def visualize_imu_sequence_current_processing(imu_data, save_path=None):
+    # Assuming imu_data shape is (N, seq_len, 11, 6)
+    # We'll visualize the first sample in the batch
+    imu_data = imu_data[0]  # Shape: (seq_len, 11, 6)
+
+    # Create a single plot for all 6 channels
+    fig, ax = plt.subplots(figsize=(12, 8))
+
+    channel_names = ['Acc X', 'Acc Y', 'Acc Z', 'Gyro X', 'Gyro Y', 'Gyro Z']
+    colors = ['r', 'g', 'b', 'c', 'm', 'y']
+
+    for seq in range(imu_data.shape[0]):
+        for channel in range(6):
+            ax.plot(range(11), imu_data[seq, :, channel],
+                    color=colors[channel], alpha=0.5,
+                    label=f'{channel_names[channel]} (Seq {seq})' if seq == 0 else "")
+
+    ax.set_xlabel('Time Step')
+    ax.set_ylabel('Sensor Value')
+    ax.set_title('IMU Sequence Visualization (All Channels)')
+    ax.legend(bbox_to_anchor=(1.05, 1), loc='upper left')
+    plt.tight_layout()
+
+    if save_path:
+        # Add timestamp to the filename
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        filename, ext = os.path.splitext(save_path)
+        save_path = f"{filename}_{timestamp}{ext}"
+        plt.savefig(save_path)
+        plt.close()
+        print(f"IMU sequence visualization saved to {save_path}")
+    else:
+        plt.show()
+
+
+def visualize_imu_sequence(imu_data, save_path=None):
+    # Assuming imu_data shape is (N, seq_len, 11, 6)
+    # We'll visualize the first sample in the batch
+    imu_data = imu_data[0]  # Shape: (seq_len, 11, 6)
+    seq_len = imu_data.shape[0]
+
+    # Create a 2x3 grid of subplots
+    fig, axs = plt.subplots(2, 3, figsize=(20, 10))
+    fig.suptitle('IMU Sequence Visualization', fontsize=16)
+
+    sensor_names = ['Accelerometer X', 'Accelerometer Y', 'Accelerometer Z',
+                    'Gyroscope X', 'Gyroscope Y', 'Gyroscope Z']
+
+    for i in range(6):
+        row = i // 3
+        col = i % 3
+        ax = axs[row, col]
+
+        # Extract data for each sensor
+        sensor_data = imu_data[:, :, i].T  # Shape: (11, seq_len)
+
+        im = ax.imshow(sensor_data, aspect='auto', cmap='coolwarm')
+        ax.set_title(sensor_names[i])
+        ax.set_ylabel('IMU Readings')
+        ax.set_xlabel('Frame Number')
+
+        ax.set_yticks(range(11))
+        ax.set_xticks(np.arange(0, seq_len, seq_len // 10))
+        ax.set_xticklabels(range(0, seq_len, seq_len // 10))
+
+        plt.colorbar(im, ax=ax)
+
+    plt.tight_layout()
+
+    if save_path:
+        # Generate timestamp
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+
+        # Split the save_path into directory and filename
+        save_dir, filename = os.path.split(save_path)
+
+        # Split the filename into name and extension
+        name, ext = os.path.splitext(filename)
+
+        # Create the new filename with timestamp
+        new_filename = f"{name}_{timestamp}{ext}"
+
+        # Join the directory and new filename
+        full_save_path = os.path.join(save_dir, new_filename)
+
+        # Save the figure
+        plt.savefig(full_save_path)
+        plt.close()
+        print(f"Figure saved as: {full_save_path}")
+    else:
+        plt.show()
+
+# Add this function to the existing utils.py file

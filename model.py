@@ -5,7 +5,8 @@ from torch.nn.init import kaiming_normal_, orthogonal_
 import numpy as np
 from torch.distributions.utils import broadcast_all, probs_to_logits, logits_to_probs, lazy_property, clamp_probs
 import torch.nn.functional as F
-
+import os
+from utils.utils import visualize_imu_sequence
 
 def conv(batchNorm, in_planes, out_planes, kernel_size=3, stride=1, dropout=0):
     if batchNorm:
@@ -44,12 +45,76 @@ class Inertial_encoder(nn.Module):
 
     def forward(self, x):
         # x: (N, seq_len, 11, 6)
+        from utils.utils import visualize_imu_sequence, visualize_imu_sequence_current_processing
+        if 0:
+            self.debug_dir = "debug"
+            os.makedirs(self.debug_dir, exist_ok=True)
+            save_path = os.path.join(self.debug_dir, 'imu_sequence_visualization.png')
+            visualize_imu_sequence(x.detach().cpu().numpy(), save_path)
+            print(f"IMU sequence visualization saved to {save_path}")
+
+        if 0:  # Only visualize during training
+            self.debug_dir = "debug_current"
+            os.makedirs(self.debug_dir, exist_ok=True)
+            save_path = os.path.join(self.debug_dir, 'imu_sequence_visualization.png')
+            visualize_imu_sequence_current_processing(x.detach().cpu().numpy(), save_path)
+
         batch_size = x.shape[0]
         seq_len = x.shape[1]
         x = x.view(batch_size * seq_len, x.size(2), x.size(3))    # x: (N x seq_len, 11, 6)
         x = self.encoder_conv(x.permute(0, 2, 1))                 # x: (N x seq_len, 64, 11)
         out = self.proj(x.view(x.shape[0], -1))                   # out: (N x seq_len, 256)
         return out.view(batch_size, seq_len, 256)
+
+
+class Inertial_temporal_encoder(nn.Module):
+    def __init__(self, opt):
+        super(Inertial_temporal_encoder, self).__init__()
+
+        self.sensor_embed = nn.Linear(6, 32)
+        self.time_embed = nn.Linear(11, 32)
+
+        self.lstm = nn.LSTM(32, 128, num_layers=2, batch_first=True, bidirectional=True)
+
+        self.attention = nn.MultiheadAttention(embed_dim=256, num_heads=4)
+
+        self.fc = nn.Sequential(
+            nn.Linear(256, 512),
+            nn.LeakyReLU(0.1),
+            nn.BatchNorm1d(512),
+            nn.Linear(512, 256),
+            nn.LeakyReLU(0.1),
+            nn.BatchNorm1d(256)
+        )
+
+    def forward(self, x):
+        # x: (N, seq_len, 11, 6)
+        batch_size, seq_len, time_steps, sensors = x.size()
+
+        # Embed sensor data
+        x = x.view(batch_size * seq_len, time_steps, sensors)
+        x = self.sensor_embed(x)  # (batch_size * seq_len, time_steps, 32)
+
+        # Embed time information
+        time_embed = self.time_embed(torch.eye(time_steps).to(x.device))
+        x = x + time_embed.unsqueeze(0)  # Add time embeddings
+
+        # Process with LSTM
+        x, _ = self.lstm(x)  # (batch_size * seq_len, time_steps, 256)
+
+        # Self-attention mechanism
+        x = x.transpose(0, 1)  # (time_steps, batch_size * seq_len, 256)
+        x, _ = self.attention(x, x, x)
+        x = x.transpose(0, 1)  # (batch_size * seq_len, time_steps, 256)
+
+        # Global average pooling over time
+        x = x.mean(dim=1)  # (batch_size * seq_len, 256)
+
+        # Final fully connected layers
+        x = self.fc(x)
+
+        return x.view(batch_size, seq_len, 256)
+
 
 class Encoder(nn.Module):
     def __init__(self, opt):
@@ -71,6 +136,7 @@ class Encoder(nn.Module):
 
         self.visual_head = nn.Linear(int(np.prod(__tmp.size())), opt.v_f_len)
         self.inertial_encoder = Inertial_encoder(opt)
+        # self.inertial_encoder = Inertial_temporal_encoder(opt)
 
     def forward(self, img, imu):
         v = torch.cat((img[:, :-1], img[:, 1:]), dim=2)
@@ -182,171 +248,115 @@ class Pose_RNN(nn.Module):
         return pose, hc
 
 
-class AdaptiveTransformerPoseEstimator(nn.Module):
-    def __init__(self, opt):
-        super().__init__()
-
-        # Key parameters from the original RNN
-        f_len = opt.v_f_len + opt.i_f_len
-        rnn_hidden_size = opt.rnn_hidden_size
-
-        # Input projection
-        self.input_proj = nn.Sequential(
-            nn.Linear(f_len, rnn_hidden_size),
-            nn.LayerNorm(rnn_hidden_size),
-            nn.GELU()
-        )
-
-        # Positional encoding
-        self.pos_encoding = nn.Parameter(torch.randn(1, 500, rnn_hidden_size))  # Large max sequence length
-
-        # Transformer encoder
-        self.transformer_encoder = nn.TransformerEncoder(
-            nn.TransformerEncoderLayer(
-                d_model=rnn_hidden_size,
-                nhead=8,
-                dim_feedforward=rnn_hidden_size * 4,
-                dropout=opt.rnn_dropout_between,
-                activation='gelu'
-            ),
-            num_layers=2
-        )
-
-        self.dropout = nn.Dropout(opt.rnn_dropout_out)
-
-        # Regression head
-        self.regressor = nn.Sequential(
-            nn.Linear(rnn_hidden_size, 128),
-            nn.LeakyReLU(0.1, inplace=True),
-            nn.Linear(128, 6)
-        )
-
-        # Cache for sequential processing
-        self.cached_encodings = None
-
-    def forward(self, fused, dec, step, reset_cache=False):
-        batch_size, seq_len, feature_size = fused.size()
-
-        # Feature projection
-        x = self.input_proj(fused)
-
-        # Positional encoding
-        pos_enc = self.pos_encoding[:, :seq_len, :]
-        x = x + pos_enc
-
-        # Reset cache if starting a new sequence
-        if reset_cache or self.cached_encodings is None:
-            self.cached_encodings = torch.zeros(batch_size, 0, x.size(-1), device=x.device)
-
-        # Concatenate cached encodings with current input
-        x = torch.cat([self.cached_encodings, x], dim=1)
-
-        # Update cache
-        self.cached_encodings = x.detach()
-
-        # Apply Transformer
-        x = self.transformer_encoder(x)
-
-        # Use the last token for regression
-        last_token = x[:, -1, :]
-        pose = self.regressor(last_token)
-
-        return pose, self.cached_encodings
-
 
 # shlomia alternative pose transformer
-class AdaptiveTransformerPoseEstimator(nn.Module):
+import torch
+import torch.nn as nn
+import math
+
+
+class HybridPoseNetwork(nn.Module):
     def __init__(self, opt):
-        super().__init__()
+        super(HybridPoseNetwork, self).__init__()
 
-        # Key parameters from the original RNN
         f_len = opt.v_f_len + opt.i_f_len
-        rnn_hidden_size = opt.rnn_hidden_size
+        self.hidden_dim = opt.rnn_hidden_size
+        self.num_heads = 8
 
-        # Input projection to match original RNN's input size
-        self.input_proj = nn.Sequential(
-            nn.Linear(f_len, rnn_hidden_size),
-            nn.LayerNorm(rnn_hidden_size),
-            nn.GELU()
+        # Input projection
+        self.input_proj = nn.Linear(f_len, self.hidden_dim)
+
+        # Transformer for feature extraction
+        encoder_layer = nn.TransformerEncoderLayer(
+            d_model=self.hidden_dim,
+            nhead=self.num_heads,
+            dim_feedforward=self.hidden_dim * 4,
+            dropout=opt.rnn_dropout_between,
+            activation='relu',
+            batch_first=True
+        )
+
+        self.transformer = nn.TransformerEncoder(
+            encoder_layer,
+            num_layers=1  # Single transformer layer as we'll use LSTM after
         )
 
         # Positional encoding
-        self.pos_encoding = nn.Parameter(torch.randn(1, 100, rnn_hidden_size))
+        self.pos_encoder = PositionalEncoding(self.hidden_dim, opt.rnn_dropout_between)
 
-        # Transformer encoder
-        self.transformer_encoder = nn.TransformerEncoder(
-            nn.TransformerEncoderLayer(
-                d_model=rnn_hidden_size,
-                nhead=8,
-                dim_feedforward=rnn_hidden_size * 4,
-                dropout=opt.rnn_dropout_between,
-                activation='gelu'
-            ),
-            num_layers=2
+        # LSTM for sequential processing
+        self.lstm = nn.LSTM(
+            input_size=self.hidden_dim,
+            hidden_size=self.hidden_dim,
+            num_layers=2,
+            dropout=opt.rnn_dropout_between,
+            batch_first=True
         )
 
-        # Dropout (mimicking original RNN's dropout)
-        self.dropout = nn.Dropout(opt.rnn_dropout_out)
-
-        # Regression head (similar to original RNN)
+        # Keep original components
+        self.fuse = Fusion_module(opt)
+        self.rnn_drop_out = nn.Dropout(opt.rnn_dropout_out)
         self.regressor = nn.Sequential(
-            nn.Linear(rnn_hidden_size, 128),
+            nn.Linear(self.hidden_dim, 128),
             nn.LeakyReLU(0.1, inplace=True),
             nn.Linear(128, 6)
         )
 
-        # Hidden state projection (to maintain compatibility)
-        self.hidden_proj = nn.Linear(rnn_hidden_size, rnn_hidden_size)
+    def _generate_square_subsequent_mask(self, sz):
+        mask = (torch.triu(torch.ones(sz, sz)) == 1).transpose(0, 1)
+        mask = mask.float().masked_fill(mask == 0, float('-inf')).masked_fill(mask == 1, float(0.0))
+        return mask
 
-    def forward(self, fused, fused_alter, dec, prev=None):
-        """
-        Mimics the original Pose_RNN forward method
-
-        Args:
-        - fused: Primary fused features
-        - fused_alter: Alternative features (zero padding or alternative input)
-        - dec: Decision tensor for feature selection
-        - prev: Previous hidden state (optional)
-
-        Returns:
-        - pose: Estimated pose
-        - hidden state
-        """
-        batch_size = fused.size(0)
-        seq_len = fused.size(1)
-
-        # Feature selection (matching original implementation)
-        if fused_alter is not None:
-            v_in = fused * dec[:, :, :1] + fused_alter * dec[:, :, -1:]
-        else:
-            v_in = fused
-
-        # Reshape for transformer (if needed)
-        v_in = v_in.view(batch_size * seq_len, v_in.size(2))
+    def forward(self, fv, fv_alter, fi, dec, prev=None):
+        # Handle input fusion like original
+        v_in = fv * dec[:, :, :1] + fv_alter * dec[:, :, -1:] if fv_alter is not None else fv
+        fused = self.fuse(v_in, fi)
 
         # Project input
-        x = self.input_proj(v_in)
+        x = self.input_proj(fused)
 
         # Add positional encoding
-        pos_enc = self.pos_encoding[:, :x.size(0), :]
-        x = x + pos_enc
+        x = self.pos_encoder(x)
 
-        # Transformer encoding
-        x = self.transformer_encoder(x)
+        # Generate transformer mask
+        trans_mask = self._generate_square_subsequent_mask(x.size(1)).to(x.device)
 
-        # Dropout
-        x = self.dropout(x)
+        # Transformer processing for feature extraction
+        trans_out = self.transformer(x, mask=trans_mask)
 
-        # Pose regression
-        pose = self.regressor(x)
+        # Handle LSTM states like original RNN
+        if prev is not None:
+            prev = (prev[0].transpose(1, 0).contiguous(),
+                    prev[1].transpose(1, 0).contiguous())
 
-        # Reshape back to original sequence
-        pose = pose.view(batch_size, seq_len, 6)
+        # LSTM processing for sequential modeling
+        lstm_out, hc = self.lstm(trans_out) if prev is None else self.lstm(trans_out, prev)
 
-        # Hidden state projection (maintaining RNN-like compatibility)
-        hidden = self.hidden_proj(x[-1:])  # Use last transformer output
+        # Process output
+        out = self.rnn_drop_out(lstm_out)
+        pose = self.regressor(out)
 
-        return pose, (hidden, hidden)  # Mimic LSTM hidden state tuple
+        # Format hidden states like original RNN
+        hc = (hc[0].transpose(1, 0).contiguous(),
+              hc[1].transpose(1, 0).contiguous())
+
+        return pose, hc
+
+
+class PositionalEncoding(nn.Module):
+    def __init__(self, d_model, dropout=0.1, max_len=5000):
+        super(PositionalEncoding, self).__init__()
+        position = torch.arange(max_len).unsqueeze(1)
+        div_term = torch.exp(torch.arange(0, d_model, 2) * (-math.log(10000.0) / d_model))
+        pe = torch.zeros(1, max_len, d_model)
+        pe[0, :, 0::2] = torch.sin(position * div_term)
+        pe[0, :, 1::2] = torch.cos(position * div_term)
+        self.register_buffer('pe', pe)
+
+        self.dropout = nn.Dropout(dropout)
+
+    def forward(self, x):
+        return self.dropout(x + self.pe[:, :x.size(1)])
 
 
 class DeepVIO(nn.Module):
@@ -355,10 +365,9 @@ class DeepVIO(nn.Module):
 
         self.Feature_net = Encoder(opt)
         self.Pose_net = Pose_RNN(opt)
-        # self.Pose_net = AdaptiveTransformerPoseEstimator(opt) # shlomia change
+        # self.Pose_net = HybridPoseNetwork(opt) # shlomia change
         self.Policy_net = PolicyNet(opt)
         self.opt = opt
-        
         initialization(self)
 
     def forward(self, img, imu, is_first=True, hc=None, temp=5, selection='gumbel-softmax', p=0.5):

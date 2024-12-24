@@ -105,3 +105,44 @@ def get_lds_kernel_window(kernel, ks, sigma):
 
 
 
+
+class KITTISmallDataset(KITTI):
+    def __init__(self, root, sequence_length=11, train_seqs=['00', '01', '02', '04', '06', '08', '09'], transform=None, sample_size=1000):
+        super().__init__(root, sequence_length, train_seqs, transform)
+        self.sample_size = sample_size
+        self.subsample_dataset()
+
+    def subsample_dataset(self):
+        if len(self.samples) > self.sample_size:
+            self.samples = random.sample(self.samples, self.sample_size)
+            # Recalculate weights for the subsampled dataset
+            self.recalculate_weights()
+
+    def recalculate_weights(self):
+        # This method recalculates the weights for the subsampled dataset
+        # using the same method as in the original KITTI class
+        from collections import Counter
+        from scipy.ndimage import convolve1d
+        import numpy as np
+
+        rot_list = np.array([np.cbrt(item['rot']*180/np.pi) for item in self.samples])
+        rot_range = np.linspace(np.min(rot_list), np.max(rot_list), num=10)
+        indexes = np.digitize(rot_list, rot_range, right=False)
+        num_samples_of_bins = dict(Counter(indexes))
+        emp_label_dist = [num_samples_of_bins.get(i, 0) for i in range(1, len(rot_range)+1)]
+
+        lds_kernel_window = get_lds_kernel_window(kernel='gaussian', ks=7, sigma=5)
+        eff_label_dist = convolve1d(np.array(emp_label_dist), weights=lds_kernel_window, mode='constant')
+
+        self.weights = [np.float32(1/eff_label_dist[bin_idx-1]) for bin_idx in indexes]
+
+    def __len__(self):
+        return len(self.samples)
+
+    def __repr__(self):
+        fmt_str = 'Dataset ' + self.__class__.__name__ + '\n'
+        fmt_str += '    Number of samples: {}\n'.format(self.sample_size)
+        fmt_str += '    ' + super().__repr__()
+        return fmt_str
+
+
