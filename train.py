@@ -24,7 +24,7 @@ parser.add_argument('--img_w', type=int, default=512, help='image width')
 parser.add_argument('--img_h', type=int, default=256, help='image height')
 parser.add_argument('--v_f_len', type=int, default=512, help='visual feature length')
 parser.add_argument('--i_f_len', type=int, default=256, help='imu feature length')
-parser.add_argument('--fuse_method', type=str, default='cat', help='fusion method [cat, soft, hard]')
+parser.add_argument('--fuse_method', type=str, default='enhanced', help='fusion method [cat, soft, hard, enhanced]')
 parser.add_argument('--imu_dropout', type=float, default=0, help='dropout for the IMU encoder')
 
 parser.add_argument('--rnn_hidden_size', type=int, default=1024, help='size of the LSTM latent')

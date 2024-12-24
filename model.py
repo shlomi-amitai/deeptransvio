@@ -4,6 +4,7 @@ from torch.autograd import Variable
 from torch.nn.init import kaiming_normal_, orthogonal_
 import numpy as np
 from torch.distributions.utils import broadcast_all, probs_to_logits, logits_to_probs, lazy_property, clamp_probs
+from extra_models import image_Inertial_Encoder
 import torch.nn.functional as F
 import os
 from utils.utils import visualize_imu_sequence
@@ -65,6 +66,89 @@ class Inertial_encoder(nn.Module):
         x = self.encoder_conv(x.permute(0, 2, 1))                 # x: (N x seq_len, 64, 11)
         out = self.proj(x.view(x.shape[0], -1))                   # out: (N x seq_len, 256)
         return out.view(batch_size, seq_len, 256)
+
+
+import torch
+import torch.nn as nn
+import math
+
+
+class CrossSequenceAttentionEncoder(nn.Module):
+    def __init__(self, opt):
+        super(CrossSequenceAttentionEncoder, self).__init__()
+
+        self.sensor_dim = 6
+        self.hidden_dim = 64
+        self.num_heads = 4
+        self.num_layers = 2
+        self.max_time_steps = 11
+        self.max_seq_len = opt.seq_len  # Assuming this is defined in opt
+
+        # Embeddings
+        self.sensor_embed = nn.Linear(self.sensor_dim, self.hidden_dim)
+        self.time_step_embed = nn.Embedding(self.max_time_steps, self.hidden_dim)
+        self.seq_position_embed = nn.Embedding(self.max_seq_len, self.hidden_dim)
+
+        # Multi-head attention layers
+        self.self_attention = nn.MultiheadAttention(self.hidden_dim, self.num_heads)
+        self.cross_attention = nn.MultiheadAttention(self.hidden_dim, self.num_heads)
+
+        # Feed-forward network
+        self.ffn = nn.Sequential(
+            nn.Linear(self.hidden_dim, self.hidden_dim * 4),
+            nn.ReLU(),
+            nn.Linear(self.hidden_dim * 4, self.hidden_dim)
+        )
+
+        # Layer normalization
+        self.norm1 = nn.LayerNorm(self.hidden_dim)
+        self.norm2 = nn.LayerNorm(self.hidden_dim)
+        self.norm3 = nn.LayerNorm(self.hidden_dim)
+
+        # Output projection
+        self.output_proj = nn.Linear(self.hidden_dim, 256)
+
+    def forward(self, x):
+        # x: (batch_size, seq_len, time_steps, sensors)
+        batch_size, seq_len, time_steps, _ = x.size()
+    
+        # Reshape and embed sensor data
+        x = x.view(batch_size * seq_len, time_steps, self.sensor_dim)
+        x = self.sensor_embed(x)  # (batch_size * seq_len, time_steps, hidden_dim)
+    
+        # Add time step embeddings
+        time_steps_indices = torch.arange(time_steps, device=x.device).unsqueeze(0).expand(batch_size * seq_len, -1)
+        x = x + self.time_step_embed(time_steps_indices)
+    
+        # Add sequence position embeddings
+        seq_positions = torch.arange(seq_len, device=x.device).repeat(batch_size)
+        seq_position_embed = self.seq_position_embed(seq_positions)
+        seq_position_embed = seq_position_embed.view(batch_size * seq_len, 1, self.hidden_dim)
+        x = x + seq_position_embed
+    
+        # Self-attention within each sequence
+        x = x.transpose(0, 1)  # (time_steps, batch_size * seq_len, hidden_dim)
+        x = self.norm1(x + self.self_attention(x, x, x)[0])
+    
+        # Reshape for cross-sequence attention
+        x = x.transpose(0, 1).view(batch_size, seq_len, time_steps, self.hidden_dim)
+        x = x.transpose(1, 2).reshape(batch_size * time_steps, seq_len, self.hidden_dim)
+    
+        # Cross-sequence attention
+        x = x.transpose(0, 1)  # (seq_len, batch_size * time_steps, hidden_dim)
+        x = self.norm2(x + self.cross_attention(x, x, x)[0])
+    
+        # Feed-forward network
+        x = self.norm3(x + self.ffn(x))
+    
+        # Global average pooling over sequences
+        x = x.transpose(0, 1).mean(dim=1)  # (batch_size * time_steps, hidden_dim)
+    
+        # Reshape and project to output dimension
+        x = x.view(batch_size, time_steps, self.hidden_dim)
+        x = self.output_proj(x.mean(dim=1))  # (batch_size, 256)
+    
+        return x.unsqueeze(1).expand(-1, seq_len, -1)  # (batch_size, seq_len, 256)
 
 
 class Inertial_temporal_encoder(nn.Module):
@@ -135,8 +219,10 @@ class Encoder(nn.Module):
         __tmp = self.encode_image(__tmp)
 
         self.visual_head = nn.Linear(int(np.prod(__tmp.size())), opt.v_f_len)
-        self.inertial_encoder = Inertial_encoder(opt)
+        # self.inertial_encoder = Inertial_encoder(opt)
         # self.inertial_encoder = Inertial_temporal_encoder(opt)
+        # self.inertial_encoder = image_Inertial_Encoder(opt)
+        self.inertial_encoder = CrossSequenceAttentionEncoder(opt)
 
     def forward(self, img, imu):
         v = torch.cat((img[:, :-1], img[:, 1:]), dim=2)
@@ -162,19 +248,35 @@ class Encoder(nn.Module):
         out_conv6 = self.conv6(out_conv5)
         return out_conv6
 
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
 
-# The fusion module
 class Fusion_module(nn.Module):
     def __init__(self, opt):
         super(Fusion_module, self).__init__()
         self.fuse_method = opt.fuse_method
-        self.f_len = opt.i_f_len + opt.v_f_len
+        self.i_f_len = opt.i_f_len
+        self.v_f_len = opt.v_f_len
+        self.f_len = self.i_f_len + self.v_f_len
+        
         if self.fuse_method == 'soft':
             self.net = nn.Sequential(
                 nn.Linear(self.f_len, self.f_len))
         elif self.fuse_method == 'hard':
             self.net = nn.Sequential(
                 nn.Linear(self.f_len, 2 * self.f_len))
+        elif self.fuse_method == 'enhanced':
+            self.attention = nn.MultiheadAttention(embed_dim=self.f_len, num_heads=4)
+            self.gate = nn.Sequential(
+                nn.Linear(self.f_len * 2, self.f_len),
+                nn.Sigmoid()
+            )
+            self.fusion_net = nn.Sequential(
+                nn.Linear(self.f_len * 2, self.f_len),
+                nn.ReLU(),
+                nn.Linear(self.f_len, self.f_len)
+            )
 
     def forward(self, v, i):
         if self.fuse_method == 'cat':
@@ -189,6 +291,24 @@ class Fusion_module(nn.Module):
             weights = weights.view(v.shape[0], v.shape[1], self.f_len, 2)
             mask = F.gumbel_softmax(weights, tau=1, hard=True, dim=-1)
             return feat_cat * mask[:, :, :, 0]
+        elif self.fuse_method == 'enhanced':
+            feat_cat = torch.cat((v, i), -1)
+            
+            # Apply self-attention
+            attn_out, _ = self.attention(feat_cat.transpose(0, 1), feat_cat.transpose(0, 1), feat_cat.transpose(0, 1))
+            attn_out = attn_out.transpose(0, 1)
+            
+            # Compute gating weights
+            gate_weights = self.gate(torch.cat((feat_cat, attn_out), dim=-1))
+            
+            # Apply gating
+            gated_features = feat_cat * gate_weights + attn_out * (1 - gate_weights)
+            
+            # Final fusion
+            fused = self.fusion_net(torch.cat((gated_features, feat_cat), dim=-1))
+            
+            return fused
+
 
 # The policy network module
 class PolicyNet(nn.Module):
