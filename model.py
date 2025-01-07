@@ -221,8 +221,8 @@ class Encoder(nn.Module):
         self.visual_head = nn.Linear(int(np.prod(__tmp.size())), opt.v_f_len)
         # self.inertial_encoder = Inertial_encoder(opt)
         # self.inertial_encoder = Inertial_temporal_encoder(opt)
-        # self.inertial_encoder = image_Inertial_Encoder(opt)
-        self.inertial_encoder = CrossSequenceAttentionEncoder(opt)
+        self.inertial_encoder = image_Inertial_Encoder(opt)
+        # self.inertial_encoder = CrossSequenceAttentionEncoder(opt)
 
     def forward(self, img, imu):
         v = torch.cat((img[:, :-1], img[:, 1:]), dim=2)

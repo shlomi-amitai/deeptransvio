@@ -10,92 +10,142 @@ class image_Inertial_Encoder(nn.Module):
     def __init__(self, opt):
         super(image_Inertial_Encoder, self).__init__()
 
-        self.resnet = models.resnet18(pretrained=True)
-        self.resnet.conv1 = nn.Conv2d(3, 64, kernel_size=7, stride=2, padding=3, bias=False)
-        self.resnet.fc = nn.Linear(512, opt.i_f_len)  # ResNet18 has 512 features in the last layer
-        self.norm = nn.BatchNorm1d(6)
+        self.encoder_conv = nn.Sequential(
+            nn.Conv2d(opt.seq_len, 64, kernel_size=3, padding=1),
+            nn.BatchNorm2d(64),
+            nn.LeakyReLU(0.1, inplace=True),
+            nn.Dropout(opt.imu_dropout),
+            nn.Conv2d(64, 128, kernel_size=3, padding=1),
+            nn.BatchNorm2d(128),
+            nn.LeakyReLU(0.1, inplace=True),
+            nn.Dropout(opt.imu_dropout),
+            nn.Conv2d(128, 256, kernel_size=3, padding=1),
+            nn.BatchNorm2d(256),
+            nn.LeakyReLU(0.1, inplace=True),
+            nn.Dropout(opt.imu_dropout))
+        
+        # Calculate the flattened feature size
+        self.flattened_size = 256 * 11 * 6
+        
+        # Modify the projection layer to output the correct size
+        self.proj = nn.Linear(self.flattened_size, opt.seq_len * opt.i_f_len)
+        
         self.output_size = opt.i_f_len
+        self.seq_len = opt.seq_len
 
     def create_inertial_image(self, x):
-        """Transform inertial signals to RGB images using Mul2Image encoding"""
+        """Transform inertial signals to images using raw IMU data"""
         batch_size, seq_len, window_size, channels = x.shape
-        # Split accelerometer and gyroscope data
-        acc = x[..., :3]  # First 3 channels are accelerometer
-        gyro = x[..., 3:]  # Last 3 channels are gyroscope
-        # Normalize signals
-        acc_norm = torch.nn.functional.normalize(acc, p=2, dim=-1)
-        # Create RGB channels through multiplication of acc and gyro
-        R = (acc_norm[..., 0] * gyro[..., 0]).unsqueeze(-1)
-        G = (acc_norm[..., 1] * gyro[..., 1]).unsqueeze(-1)
-        B = (acc_norm[..., 2] * gyro[..., 2]).unsqueeze(-1)
-        # Stack RGB channels
-        inertial_image = torch.cat([R, G, B], dim=-1)
-        # Reshape to [batch_size, seq_len, channels, height]
-        inertial_image = inertial_image.permute(0, 1, 3, 2)
+
+        # Reshape to use seq_len as channels: [batch_size, seq_len, 11, 6]
+        inertial_image = x.permute(0, 1, 2, 3)
+
         # Scale to [0, 1] range
         inertial_image = (inertial_image - inertial_image.min()) / (inertial_image.max() - inertial_image.min())
-
-        # Visualize the inertial image (uncomment when needed)
-        # visualize_inertial_image(inertial_image[0, 0], save_path='debug/inertial_image.png')
 
         return inertial_image
 
     def forward(self, x):
-        # x: (N, seq_len, 11, 6) - batch_size, sequence_length, window_size, channels
+        device = x.device
+        self.to(device)
+        
         batch_size, seq_len = x.shape[:2]
-        # Create inertial images
+        
         inertial_images = self.create_inertial_image(x)
-        # Reshape for ResNet input
-        inertial_images = inertial_images.view(-1, 3, inertial_images.shape[-1], 1)
-        # Pass through ResNet backbone
-        features = self.resnet(inertial_images)
-        # Reshape output to match required dimensions
-        out = features.view(batch_size, seq_len, self.output_size)
+        
+        # Add this line to visualize and save the inertial images
+        visualize_inertial_image(inertial_images, save_path='debug_images/inertial_images.png')
+        
+        inertial_images = inertial_images.permute(0, 1, 2, 3)
+        
+        self.encoder_conv[0] = nn.Conv2d(seq_len, 64, kernel_size=3, padding=1).to(device)
+        
+        features = self.encoder_conv(inertial_images)
+        
+        # Flatten the features
+        features = features.view(batch_size, -1)
+        
+        # Project to desired output size
+        out = self.proj(features)
+        
+        # Reshape to match the original batch size and sequence length
+        out = out.view(batch_size, self.seq_len, self.output_size)
         return out
 
 
-def visualize_inertial_image(inertial_image, save_path=None):
+
+import matplotlib.pyplot as plt
+import os
+from datetime import datetime
+
+import math
+
+def visualize_inertial_image(inertial_images, save_path=None):
     # Convert to numpy and move to CPU if on GPU
-    img = inertial_image.cpu().numpy()
+    imgs = inertial_images.cpu().numpy()
 
     # Check the shape of the input
-    if len(img.shape) == 2:
-        # If it's a 2D image, we can display it directly
-        plt.figure(figsize=(10, 10))
-        plt.imshow(img, cmap='viridis')  # Using viridis colormap for single-channel image
-    elif len(img.shape) == 3:
-        # If it's a 3D tensor, assume it's in the format (channels, height, width)
-        img = np.transpose(img, (1, 2, 0))  # Reorder to (height, width, channels)
-        plt.figure(figsize=(10, 10))
-        plt.imshow(img)
+    if len(imgs.shape) == 4:  # (batch_size, seq_len, 11, 6)
+        batch_size, seq_len, height, width = imgs.shape
     else:
-        raise ValueError(f"Unexpected shape for inertial_image: {img.shape}")
+        raise ValueError(f"Unexpected shape for inertial_images: {imgs.shape}")
 
-    plt.title('Inertial Image Visualization')
-    plt.axis('off')
+    for batch_idx in range(batch_size):
+        # Calculate the number of rows and columns for the subplot grid
+        n_cols = min(3, seq_len)
+        n_rows = math.ceil(seq_len / n_cols)
 
-    if save_path:
-        # Generate timestamp
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        fig, axes = plt.subplots(n_rows, n_cols, figsize=(5*n_cols, 5*n_rows))
+        fig.suptitle(f'Inertial Image Visualization - Batch {batch_idx}')
 
-        # Split the save_path into directory and filename
-        save_dir, filename = os.path.split(save_path)
+        # Ensure axes is always a 2D array
+        if n_rows == 1:
+            axes = axes.reshape(1, -1)
+        elif n_cols == 1:
+            axes = axes.reshape(-1, 1)
 
-        # Split the filename into name and extension
-        name, ext = os.path.splitext(filename)
+        for seq_idx in range(seq_len):
+            row = seq_idx // n_cols
+            col = seq_idx % n_cols
+            ax = axes[row, col]
+            
+            img = imgs[batch_idx, seq_idx]
+            im = ax.imshow(img, cmap='viridis', aspect='auto')
+            ax.set_title(f'Sequence {seq_idx}')
+            ax.axis('off')
+            plt.colorbar(im, ax=ax)
 
-        # Create the new filename with timestamp
-        new_filename = f"{name}_{timestamp}{ext}"
+        # Hide any unused subplots
+        for idx in range(seq_len, n_rows * n_cols):
+            row = idx // n_cols
+            col = idx % n_cols
+            axes[row, col].axis('off')
 
-        # Join the directory and new filename
-        full_save_path = os.path.join(save_dir, new_filename)
+        plt.tight_layout()
 
-        # Create directory if it doesn't exist
-        os.makedirs(save_dir, exist_ok=True)
+        if save_path:
+            # Generate timestamp
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
 
-        # Save the figure
-        plt.savefig(full_save_path)
-        plt.close()
-        print(f"Inertial image visualization saved as: {full_save_path}")
-    else:
-        plt.show()
+            # Split the save_path into directory and filename
+            save_dir, filename = os.path.split(save_path)
+
+            # Split the filename into name and extension
+            name, ext = os.path.splitext(filename)
+
+            # Create the new filename with timestamp and batch index
+            new_filename = f"{name}_batch{batch_idx}_{timestamp}{ext}"
+
+            # Join the directory and new filename
+            full_save_path = os.path.join(save_dir, new_filename)
+
+            # Create directory if it doesn't exist
+            os.makedirs(save_dir, exist_ok=True)
+
+            # Save the figure
+            plt.savefig(full_save_path)
+            plt.close()
+            print(f"Inertial image visualization for batch {batch_idx} saved as: {full_save_path}")
+        else:
+            plt.show()
+
