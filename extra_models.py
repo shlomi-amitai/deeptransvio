@@ -11,7 +11,7 @@ class image_Inertial_Encoder(nn.Module):
         super(image_Inertial_Encoder, self).__init__()
 
         self.encoder_conv = nn.Sequential(
-            nn.Conv2d(opt.seq_len, 64, kernel_size=3, padding=1),
+            nn.Conv2d(10, 64, kernel_size=3, padding=1),
             nn.BatchNorm2d(64),
             nn.LeakyReLU(0.1, inplace=True),
             nn.Dropout(opt.imu_dropout),
@@ -54,7 +54,7 @@ class image_Inertial_Encoder(nn.Module):
         inertial_images = self.create_inertial_image(x)
         
         # Add this line to visualize and save the inertial images
-        visualize_inertial_image(inertial_images, save_path='debug_images/inertial_images.png')
+        # visualize_inertial_image(inertial_images, save_path='debug_images/inertial_images.png')
         
         inertial_images = inertial_images.permute(0, 1, 2, 3)
         

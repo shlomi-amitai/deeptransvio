@@ -35,6 +35,7 @@ parser.add_argument('--rnn_dropout_between', type=float, default=0.2, help='drop
 parser.add_argument('--workers', type=int, default=4, help='number of workers')
 parser.add_argument('--experiment_name', type=str, default='test', help='experiment name')
 parser.add_argument('--model', type=str, default='./pretrain_models/vf_512_if_256_3e-05.model', help='path to the pretrained model')
+parser.add_argument('--selection_choise', type=str, default='gumbel-softmax', help='path to the pretrained model')
 
 args = parser.parse_args()
 
@@ -78,6 +79,7 @@ def main():
 
     errors = tester.eval(model, 'gumbel-softmax', num_gpu=len(gpu_ids))
     tester.generate_plots(result_dir, 30)
+    tester.generate_extended_plots(result_dir)
     tester.save_text(result_dir)
     
     for i, seq in enumerate(args.val_seq):

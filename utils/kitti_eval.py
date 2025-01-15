@@ -70,7 +70,14 @@ class KITTI_tester():
             self.dataloader.append(data_partition(args, seq))
 
         self.args = args
-    
+
+    def generate_extended_plots(self, result_dir):
+        for i, seq in enumerate(self.args.val_seq):
+            pose_est_global = self.est[i]['pose_est_global']
+            pose_gt_global = self.est[i]['pose_gt_global']
+            plotExtendedAnalysis(seq, pose_gt_global, pose_est_global, result_dir)
+
+
     def test_one_path(self, net, df, selection, num_gpu=1, p=0.5):
         hc = None
         pose_list, decision_list, probs_list= [], [], []
@@ -265,6 +272,63 @@ def plotPath_2D(seq, poses_gt_mat, poses_est_mat, plot_path_dir, decision, speed
     plt.close()
 
 
+def plotExtendedAnalysis(seq, poses_gt_mat, poses_est_mat, plot_path_dir):
+    fontsize_ = 10
+    plot_keys = ["Ground Truth", "Ours"]
 
+    # Extract x, y, z coordinates
+    x_gt = np.asarray([pose[0, 3] for pose in poses_gt_mat])
+    y_gt = np.asarray([pose[1, 3] for pose in poses_gt_mat])
+    z_gt = np.asarray([pose[2, 3] for pose in poses_gt_mat])
+
+    x_pred = np.asarray([pose[0, 3] for pose in poses_est_mat])
+    y_pred = np.asarray([pose[1, 3] for pose in poses_est_mat])
+    z_pred = np.asarray([pose[2, 3] for pose in poses_est_mat])
+
+    fig, (ax1, ax2, ax3) = plt.subplots(3, 1, figsize=(10, 15), dpi=100)
+
+    # 1. Scale difference plot (top subplot)
+    path_length_gt = np.cumsum(np.sqrt(np.diff(x_gt)**2 + np.diff(y_gt)**2 + np.diff(z_gt)**2))
+    path_length_pred = np.cumsum(np.sqrt(np.diff(x_pred)**2 + np.diff(y_pred)**2 + np.diff(z_pred)**2))
+    ax1.plot(path_length_gt, label='Ground Truth')
+    ax1.plot(path_length_pred, label='Prediction')
+    ax1.set_xlabel('Step', fontsize=fontsize_)
+    ax1.set_ylabel('Cumulative Path Length (m)', fontsize=fontsize_)
+    ax1.legend(loc="upper left", prop={'size': fontsize_})
+    ax1.set_title('Scale Comparison')
+
+    # 2. Y-axis error plot (middle subplot)
+    y_error = y_pred - y_gt
+    ax2.plot(y_error, label='Y-axis Error')
+    ax2.set_xlabel('Step', fontsize=fontsize_)
+    ax2.set_ylabel('Y-axis Error (m)', fontsize=fontsize_)
+    ax2.axhline(y=0, color='r', linestyle='--')
+    ax2.legend(loc="upper right", prop={'size': fontsize_})
+    ax2.set_title('Y-axis Error')
+
+    # 3. 3D error magnitude plot (bottom subplot)
+    error_3d = np.sqrt((x_pred - x_gt)**2 + (y_pred - y_gt)**2 + (z_pred - z_gt)**2)
+    ax3.plot(error_3d, label='3D Error Magnitude')
+    ax3.set_xlabel('Step', fontsize=fontsize_)
+    ax3.set_ylabel('3D Error Magnitude (m)', fontsize=fontsize_)
+    ax3.legend(loc="upper right", prop={'size': fontsize_})
+    ax3.set_title('3D Error Magnitude')
+
+    plt.tight_layout()
+    png_title = "{}_extended_analysis".format(seq)
+    plt.savefig(plot_path_dir + "/" + png_title + ".png", bbox_inches='tight', pad_inches=0.1)
+    plt.close()
+
+    # Additional plot: Cumulative error
+    plt.figure(figsize=(10, 5))
+    cumulative_error = np.cumsum(error_3d)
+    plt.plot(cumulative_error, label='Cumulative 3D Error')
+    plt.xlabel('Step', fontsize=fontsize_)
+    plt.ylabel('Cumulative 3D Error (m)', fontsize=fontsize_)
+    plt.title('Cumulative 3D Error Over Time')
+    plt.legend(loc="upper left", prop={'size': fontsize_})
+    png_title = "{}_cumulative_error".format(seq)
+    plt.savefig(plot_path_dir + "/" + png_title + ".png", bbox_inches='tight', pad_inches=0.1)
+    plt.close()
 
 

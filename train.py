@@ -11,6 +11,12 @@ from utils.kitti_eval import KITTI_tester
 import numpy as np
 import math
 
+#
+# משתמש: samitai
+# סיסמה: kiara$6666
+
+
+
 parser = argparse.ArgumentParser(formatter_class=argparse.ArgumentDefaultsHelpFormatter)
 parser.add_argument('--data_dir', type=str, default='/home/shlomia/work/myrepo/Visual-Selective-VIO/data', help='path to the dataset')
 parser.add_argument('--gpu_ids', type=str, default='0', help='gpu ids: e.g. 0  0,1,2, 0,2. use -1 for CPU')
