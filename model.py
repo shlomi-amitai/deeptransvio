@@ -237,7 +237,7 @@ class Encoder(nn.Module):
         
         # IMU CNN
         imu = torch.cat([imu[:, i * 10:i * 10 + 11, :].unsqueeze(1) for i in range(seq_len)], dim=1)
-        imu = self.inertial_encoder(imu)
+        imu = self.inertial_encoder(imu) # 10 X sequences with seq_len =11
         return v, imu
 
     def encode_image(self, x):

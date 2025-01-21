@@ -4,69 +4,132 @@ from torchvision import models
 import matplotlib.pyplot as plt
 import os
 from datetime import datetime
+import numpy as np
 
+def high_pass_filter(data, alpha=0.8):
+    filtered_data = np.zeros_like(data)
+    filtered_data[0] = data[1] - data[0]
+    for i in range(1, len(data)):
+        filtered_data[i] = alpha * (data[i] - data[i-1])
+    return filtered_data
 
+def preprocess_inertial_data(inertial_images):
+    # Assuming inertial_images shape is (batch_size, seq_len, 11, 6)
+    batch_size, seq_len, height, channels = inertial_images.shape
+    
+    # Create a new array to store the processed data
+    processed_data = np.zeros_like(inertial_images.cpu().numpy())
+    
+    for b in range(batch_size):
+        for h in range(seq_len):
+            # Apply high-pass filter to acceleration data (first 3 channels)
+            for c in range(3):
+                processed_data[b, h, :, c] = high_pass_filter(inertial_images[b, h, :, c].cpu().numpy())
+            
+            # Copy gyroscope data as is (last 3 channels)
+            processed_data[b, h, :, 3:] = inertial_images[b, h, :, 3:].cpu().numpy()
+    
+    return torch.from_numpy(processed_data).to(inertial_images.device)
+def create_inertial_image(self, x):
+    """Transform inertial signals to images using preprocessed IMU data"""
+    batch_size, seq_len, window_size, channels = x.shape
+
+    # Preprocess the inertial data
+    x = preprocess_inertial_data(x)
+
+    # Reshape to use seq_len as channels: [batch_size, seq_len, 11, 6]
+    inertial_image = x.permute(0, 1, 2, 3)
+
+    # Scale to [0, 1] range
+    inertial_image = (inertial_image - inertial_image.min()) / (inertial_image.max() - inertial_image.min())
+
+    return inertial_image
 class image_Inertial_Encoder(nn.Module):
     def __init__(self, opt):
         super(image_Inertial_Encoder, self).__init__()
 
-        self.encoder_conv = nn.Sequential(
-            nn.Conv2d(10, 64, kernel_size=3, padding=1),
-            nn.BatchNorm2d(64),
-            nn.LeakyReLU(0.1, inplace=True),
-            nn.Dropout(opt.imu_dropout),
-            nn.Conv2d(64, 128, kernel_size=3, padding=1),
-            nn.BatchNorm2d(128),
-            nn.LeakyReLU(0.1, inplace=True),
-            nn.Dropout(opt.imu_dropout),
-            nn.Conv2d(128, 256, kernel_size=3, padding=1),
-            nn.BatchNorm2d(256),
-            nn.LeakyReLU(0.1, inplace=True),
-            nn.Dropout(opt.imu_dropout))
-        
-        # Calculate the flattened feature size
-        self.flattened_size = 256 * 11 * 6
-        
-        # Modify the projection layer to output the correct size
-        self.proj = nn.Linear(self.flattened_size, opt.seq_len * opt.i_f_len)
+        # Separate encoders for accelerometer and gyroscope data
+        self.accel_encoder = self.create_encoder(10, opt.imu_dropout)
+        self.gyro_encoder = self.create_encoder(10, opt.imu_dropout)
+
+        # Calculate the flattened feature size for each encoder
+        self.flattened_size = 256 * 11 * 3  # 3 instead of 6 as we're processing 3 channels each
+
+        # Combine features from both encoders
+        self.combiner = nn.Sequential(
+            nn.Linear(2 * self.flattened_size, 512),
+            nn.ReLU(),
+            nn.Dropout(opt.imu_dropout)
+        )
+
+        # Final projection layer
+        self.proj = nn.Linear(512, opt.seq_len * opt.i_f_len)
         
         self.output_size = opt.i_f_len
         self.seq_len = opt.seq_len
 
+    def create_encoder(self, input_channels, dropout):
+        return nn.Sequential(
+            nn.Conv2d(input_channels, 64, kernel_size=3, padding=1),
+            nn.BatchNorm2d(64),
+            nn.LeakyReLU(0.1, inplace=True),
+            nn.Dropout(dropout),
+            nn.Conv2d(64, 128, kernel_size=3, padding=1),
+            nn.BatchNorm2d(128),
+            nn.LeakyReLU(0.1, inplace=True),
+            nn.Dropout(dropout),
+            nn.Conv2d(128, 256, kernel_size=3, padding=1),
+            nn.BatchNorm2d(256),
+            nn.LeakyReLU(0.1, inplace=True),
+            nn.Dropout(dropout)
+        )
+
     def create_inertial_image(self, x):
-        """Transform inertial signals to images using raw IMU data"""
+        """Transform inertial signals to images using preprocessed IMU data"""
         batch_size, seq_len, window_size, channels = x.shape
 
-        # Reshape to use seq_len as channels: [batch_size, seq_len, 11, 6]
-        inertial_image = x.permute(0, 1, 2, 3)
+        # Preprocess the inertial data
+        x = preprocess_inertial_data(x)
 
-        # Scale to [0, 1] range
-        inertial_image = (inertial_image - inertial_image.min()) / (inertial_image.max() - inertial_image.min())
+        # Separate accelerometer and gyroscope data
+        accel_data = x[:, :, :, :3]
+        gyro_data = x[:, :, :, 3:]
 
-        return inertial_image
+        # Create accelerometer image
+        accel_image = accel_data.permute(0, 1, 2, 3)
+        accel_image = (accel_image - accel_image.min()) / (accel_image.max() - accel_image.min())
+
+        # Create gyroscope image
+        gyro_image = gyro_data.permute(0, 1, 2, 3)
+        gyro_image = (gyro_image - gyro_image.min()) / (gyro_image.max() - gyro_image.min())
+
+        return accel_image, gyro_image
 
     def forward(self, x):
         device = x.device
         self.to(device)
         
         batch_size, seq_len = x.shape[:2]
+
+        accel_image, gyro_image = self.create_inertial_image(x)
+
+        visualize_inertial_image(accel_image, save_path='debug_images/accel_image.png')
+        visualize_inertial_image(gyro_image, save_path='debug_images/gyro_image.png')
+
+        # Process accelerometer and gyroscope data separately
+        accel_features = self.accel_encoder(accel_image)
+        gyro_features = self.gyro_encoder(gyro_image)
         
-        inertial_images = self.create_inertial_image(x)
+        # Flatten and combine features
+        accel_features = accel_features.view(batch_size, -1)
+        gyro_features = gyro_features.view(batch_size, -1)
+        combined_features = torch.cat([accel_features, gyro_features], dim=1)
         
-        # Add this line to visualize and save the inertial images
-        # visualize_inertial_image(inertial_images, save_path='debug_images/inertial_images.png')
-        
-        inertial_images = inertial_images.permute(0, 1, 2, 3)
-        
-        self.encoder_conv[0] = nn.Conv2d(seq_len, 64, kernel_size=3, padding=1).to(device)
-        
-        features = self.encoder_conv(inertial_images)
-        
-        # Flatten the features
-        features = features.view(batch_size, -1)
+        # Combine features
+        combined_features = self.combiner(combined_features)
         
         # Project to desired output size
-        out = self.proj(features)
+        out = self.proj(combined_features)
         
         # Reshape to match the original batch size and sequence length
         out = out.view(batch_size, self.seq_len, self.output_size)
