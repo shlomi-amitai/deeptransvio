@@ -8,9 +8,9 @@ import numpy as np
 
 def high_pass_filter(data, alpha=0.8):
     filtered_data = np.zeros_like(data)
-    filtered_data[0] = data[1] - data[0]
+    filtered_data[0] = data[0] - np.mean(data)
     for i in range(1, len(data)):
-        filtered_data[i] = alpha * (data[i] - data[i-1])
+        filtered_data[i] = alpha * (filtered_data[i-1] + data[i] - data[i-1])
     return filtered_data
 
 def preprocess_inertial_data(inertial_images):
@@ -22,12 +22,12 @@ def preprocess_inertial_data(inertial_images):
     
     for b in range(batch_size):
         for h in range(seq_len):
+            processed_data[b, h, :, :] = inertial_images[b, h, :, :].cpu().numpy()
             # Apply high-pass filter to acceleration data (first 3 channels)
-            for c in range(3):
-                processed_data[b, h, :, c] = high_pass_filter(inertial_images[b, h, :, c].cpu().numpy())
-            
+            processed_data[b, h, :, 2] = high_pass_filter(inertial_images[b, h, :, 2].cpu().numpy())
+
             # Copy gyroscope data as is (last 3 channels)
-            processed_data[b, h, :, 3:] = inertial_images[b, h, :, 3:].cpu().numpy()
+            # processed_data[b, h, :, 3:] = inertial_images[b, h, :, 3:].cpu().numpy()
     
     return torch.from_numpy(processed_data).to(inertial_images.device)
 def create_inertial_image(self, x):
@@ -113,8 +113,8 @@ class image_Inertial_Encoder(nn.Module):
 
         accel_image, gyro_image = self.create_inertial_image(x)
 
-        visualize_inertial_image(accel_image, save_path='debug_images/accel_image.png')
-        visualize_inertial_image(gyro_image, save_path='debug_images/gyro_image.png')
+        # visualize_inertial_image(accel_image, save_path='debug_images/accel_image.png')
+        # visualize_inertial_image(gyro_image, save_path='debug_images/gyro_image.png')
 
         # Process accelerometer and gyroscope data separately
         accel_features = self.accel_encoder(accel_image)
