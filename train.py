@@ -73,8 +73,8 @@ def update_status(ep, args, model):
         lr = args.lr_warmup
         selection = 'random'
         temp = args.temp_init
-        for param in model.module.Policy_net.parameters(): # Disable the policy network
-            param.requires_grad = False
+        # for param in model.module.Policy_net.parameters(): # Disable the policy network
+        #     param.requires_grad = False
     elif ep >= args.epochs_warmup and ep < args.epochs_warmup + args.epochs_joint: # Joint training stage
         lr = args.lr_joint
         selection = 'gumbel-softmax'
@@ -102,7 +102,7 @@ def train(model, optimizer, train_loader, selection, temp, logger, ep, p=0.5, we
 
         optimizer.zero_grad()
                 
-        poses, decisions, probs, _ = model(imgs, imus, is_first=True, hc=None, temp=temp, selection=selection, p=p)
+        poses, _ = model(imgs, imus, is_first=True, hc=None, temp=temp, selection=selection, p=p)
         
         if not weighted:
             angle_loss = torch.nn.functional.mse_loss(poses[:,:,:3], gts[:, :, :3])
@@ -113,21 +113,20 @@ def train(model, optimizer, train_loader, selection, temp, logger, ep, p=0.5, we
             translation_loss = (weight.unsqueeze(-1).unsqueeze(-1) * (poses[:,:,3:] - gts[:, :, 3:]) ** 2).mean()
         
         pose_loss = 100 * angle_loss + translation_loss        
-        penalty = (decisions[:,:,0].float()).sum(-1).mean()
-        loss = pose_loss + args.Lambda * penalty 
+
+        loss = pose_loss
         
         loss.backward()
         optimizer.step()
         
         if i % args.print_frequency == 0: 
-            message = f'Epoch: {ep}, iters: {i}/{data_len}, pose loss: {pose_loss.item():.6f}, penalty: {penalty.item():.6f}, loss: {loss.item():.6f}'
+            message = f'Epoch: {ep}, iters: {i}/{data_len}, pose loss: {pose_loss.item():.6f}, loss: {loss.item():.6f}'
             print(message)
             logger.info(message)
 
         mse_losses.append(pose_loss.item())
-        penalties.append(penalty.item())
 
-    return np.mean(mse_losses), np.mean(penalties)
+    return np.mean(mse_losses)
 
 
 def main():
@@ -236,11 +235,11 @@ def main():
         logger.info(message)
 
         model.train()
-        avg_pose_loss, avg_penalty_loss = train(model, optimizer, train_loader, selection, temp, logger, ep, p=0.5)
+        avg_pose_loss = train(model, optimizer, train_loader, selection, temp, logger, ep, p=0.5)
         
         # Save the model after training
         torch.save(model.module.state_dict(), f'{checkpoints_dir}/{ep:003}.pth')
-        message = f'Epoch {ep} training finished, pose loss: {avg_pose_loss:.6f}, penalty_loss: {avg_penalty_loss:.6f}, model saved'
+        message = f'Epoch {ep} training finished, pose loss: {avg_pose_loss:.6f}, model saved'
         print(message)
         logger.info(message)
         

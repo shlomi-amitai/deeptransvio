@@ -352,13 +352,13 @@ class Pose_RNN(nn.Module):
             nn.LeakyReLU(0.1, inplace=True),
             nn.Linear(128, 6))
 
-    def forward(self, fv, fv_alter, fi, dec, prev=None):
+    def forward(self, fv, fv_alter, fi, prev=None):
         if prev is not None:
             prev = (prev[0].transpose(1, 0).contiguous(), prev[1].transpose(1, 0).contiguous())
         
         # Select between fv and fv_alter
-        v_in = fv * dec[:, :, :1] + fv_alter * dec[:, :, -1:] if fv_alter is not None else fv
-        fused = self.fuse(v_in, fi)
+        # v_in = fv * dec[:, :, :1] + fv_alter * dec[:, :, -1:] if fv_alter is not None else fv
+        fused = self.fuse(fv, fi)
         
         out, hc = self.rnn(fused) if prev is None else self.rnn(fused, prev)
         out = self.rnn_drop_out(out)
@@ -486,7 +486,7 @@ class DeepVIO(nn.Module):
         self.Feature_net = Encoder(opt)
         self.Pose_net = Pose_RNN(opt)
         # self.Pose_net = HybridPoseNetwork(opt) # shlomia change
-        self.Policy_net = PolicyNet(opt)
+        # self.Policy_net = PolicyNet(opt)
         self.opt = opt
         initialization(self)
 
@@ -503,34 +503,15 @@ class DeepVIO(nn.Module):
         for i in range(seq_len):
             if i == 0 and is_first:
                 # The first relative pose is estimated by both images and imu by default
-                pose, hc = self.Pose_net(fv[:, i:i+1, :], None, fi[:, i:i+1, :], None, hc)
+                pose, hc = self.Pose_net(fv[:, i:i+1, :], None, fi[:, i:i+1, :], hc)
             else:
-                if selection == 'gumbel-softmax':
-                    # Otherwise, sample the decision from the policy network
-                    p_in = torch.cat((fi[:, i, :], hidden), -1)
-                    logit, decision = self.Policy_net(p_in.detach(), temp)
-                    decision = decision.unsqueeze(1)
-                    logit = logit.unsqueeze(1)
-                    pose, hc = self.Pose_net(fv[:, i:i+1, :], fv_alter[:, i:i+1, :], fi[:, i:i+1, :], decision, hc)
-                    decisions.append(decision)
-                    logits.append(logit)
-                elif selection == 'random':
-                    decision = (torch.rand(fv.shape[0], 1, 2) < p).float()
-                    decision[:,:,1] = 1-decision[:,:,0]
-                    decision = decision.to(fv.device)
-                    logit = 0.5*torch.ones((fv.shape[0], 1, 2)).to(fv.device)
-                    pose, hc = self.Pose_net(fv[:, i:i+1, :], fv_alter[:, i:i+1, :], fi[:, i:i+1, :], decision, hc)
-                    decisions.append(decision)
-                    logits.append(logit)
+                pose, hc = self.Pose_net(fv[:, i:i + 1, :], fv_alter[:, i:i + 1, :], fi[:, i:i + 1, :], hc)
             poses.append(pose)
             hidden = hc[0].contiguous()[:, -1, :]
 
         poses = torch.cat(poses, dim=1)
-        decisions = torch.cat(decisions, dim=1)
-        logits = torch.cat(logits, dim=1)
-        probs = torch.nn.functional.softmax(logits, dim=-1)
 
-        return poses, decisions, probs, hc
+        return poses, hc
 
 
 def initialization(net):
