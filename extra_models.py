@@ -6,6 +6,75 @@ import os
 from datetime import datetime
 import numpy as np
 
+
+class image_Inertial_Encoder(nn.Module):
+    def __init__(self, opt):
+        super(image_Inertial_Encoder, self).__init__()
+
+        self.encoder_conv = nn.Sequential(
+            nn.Conv2d(10, 64, kernel_size=3, padding=1),
+            nn.BatchNorm2d(64),
+            nn.LeakyReLU(0.1, inplace=True),
+            nn.Dropout(opt.imu_dropout),
+            nn.Conv2d(64, 128, kernel_size=3, padding=1),
+            nn.BatchNorm2d(128),
+            nn.LeakyReLU(0.1, inplace=True),
+            nn.Dropout(opt.imu_dropout),
+            nn.Conv2d(128, 256, kernel_size=3, padding=1),
+            nn.BatchNorm2d(256),
+            nn.LeakyReLU(0.1, inplace=True),
+            nn.Dropout(opt.imu_dropout))
+
+        # Calculate the flattened feature size
+        self.flattened_size = 256 * 11 * 6
+
+        # Modify the projection layer to output the correct size
+        self.proj = nn.Linear(self.flattened_size, opt.seq_len * opt.i_f_len)
+
+        self.output_size = opt.i_f_len
+        self.seq_len = opt.seq_len
+
+    def create_inertial_image(self, x):
+        """Transform inertial signals to images using raw IMU data"""
+        batch_size, seq_len, window_size, channels = x.shape
+
+        # Reshape to use seq_len as channels: [batch_size, seq_len, 11, 6]
+        inertial_image = x.permute(0, 1, 2, 3)
+
+        # Scale to [0, 1] range
+        inertial_image = (inertial_image - inertial_image.min()) / (inertial_image.max() - inertial_image.min())
+
+        return inertial_image
+
+    def forward(self, x):
+        device = x.device
+        self.to(device)
+
+        batch_size, seq_len = x.shape[:2]
+
+        inertial_images = self.create_inertial_image(x)
+
+        # Add this line to visualize and save the inertial images
+        # visualize_inertial_image(inertial_images, save_path='debug_images/inertial_images.png')
+
+        inertial_images = inertial_images.permute(0, 1, 2, 3)
+
+        features = self.encoder_conv(inertial_images)
+
+        # Flatten the features
+        features = features.view(batch_size, -1)
+
+        # Project to desired output size
+        out = self.proj(features)
+
+        # Reshape to match the original batch size and sequence length
+        out = out.view(batch_size, self.seq_len, self.output_size)
+        return out
+
+
+
+
+
 def high_pass_filter(data, alpha=0.8):
     filtered_data = np.zeros_like(data)
     filtered_data[0] = data[0] - np.mean(data)
@@ -44,9 +113,9 @@ def create_inertial_image(self, x):
     inertial_image = (inertial_image - inertial_image.min()) / (inertial_image.max() - inertial_image.min())
 
     return inertial_image
-class image_Inertial_Encoder(nn.Module):
+class image_Inertial_Encoder_2_channels(nn.Module):
     def __init__(self, opt):
-        super(image_Inertial_Encoder, self).__init__()
+        super(image_Inertial_Encoder_2_channels, self).__init__()
 
         # Separate encoders for accelerometer and gyroscope data
         self.accel_encoder = self.create_encoder(10, opt.imu_dropout)
