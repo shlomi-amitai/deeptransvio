@@ -85,25 +85,21 @@ class KITTI_tester():
             x_in = image_seq.unsqueeze(0).repeat(num_gpu,1,1,1,1).cuda()
             i_in = imu_seq.unsqueeze(0).repeat(num_gpu,1,1).cuda()
             with torch.no_grad():
-                pose, decision, probs, hc = net(x_in, i_in, is_first=(i==0), hc=hc, selection=selection, p=p)
+                pose, hc = net(x_in, i_in, is_first=(i==0), hc=hc, selection=selection, p=p)
             pose_list.append(pose[0,:,:].detach().cpu().numpy())
-            decision_list.append(decision[0,:,:].detach().cpu().numpy()[:, 0])
-            probs_list.append(probs[0,:,:].detach().cpu().numpy())
         pose_est = np.vstack(pose_list)
-        dec_est = np.hstack(decision_list)
-        prob_est = np.vstack(probs_list)        
-        return pose_est, dec_est, prob_est
+        return pose_est
 
     def eval(self, net, selection, num_gpu=1, p=0.5):
         self.errors = []
         self.est = []
         for i, seq in enumerate(self.args.val_seq):
             print(f'testing sequence {seq}')
-            pose_est, dec_est, prob_est = self.test_one_path(net, self.dataloader[i], selection, num_gpu=num_gpu, p=p)            
-            pose_est_global, pose_gt_global, t_rel, r_rel, t_rmse, r_rmse, usage, speed = kitti_eval(pose_est, dec_est, self.dataloader[i].poses_rel)
+            pose_est = self.test_one_path(net, self.dataloader[i], selection, num_gpu=num_gpu, p=p)
+            pose_est_global, pose_gt_global, t_rel, r_rel, t_rmse, r_rmse, speed = kitti_eval(pose_est, self.dataloader[i].poses_rel)
             
-            self.est.append({'pose_est_global':pose_est_global, 'pose_gt_global':pose_gt_global, 'decs':dec_est, 'probs':prob_est, 'speed':speed})
-            self.errors.append({'t_rel':t_rel, 'r_rel':r_rel, 't_rmse':t_rmse, 'r_rmse':r_rmse, 'usage':usage})
+            self.est.append({'pose_est_global':pose_est_global, 'pose_gt_global':pose_gt_global, 'speed':speed})
+            self.errors.append({'t_rel':t_rel, 'r_rel':r_rel, 't_rmse':t_rmse, 'r_rmse':r_rmse})
             
         return self.errors
 
@@ -113,8 +109,7 @@ class KITTI_tester():
                         self.est[i]['pose_gt_global'], 
                         self.est[i]['pose_est_global'], 
                         save_dir, 
-                        self.est[i]['decs'], 
-                        self.est[i]['speed'], 
+                        self.est[i]['speed'],
                         window_size)
     
     def save_text(self, save_dir):
@@ -124,11 +119,9 @@ class KITTI_tester():
             print('Seq {} saved'.format(seq))
 
 
-def kitti_eval(pose_est, dec_est, pose_gt):
+def kitti_eval(pose_est, pose_gt):
     
-    # First decision is always true
-    dec_est = np.insert(dec_est, 0, 1)
-    
+
     # Calculate the translational and rotational RMSE
     t_rmse, r_rmse = rmse_err_cal(pose_est, pose_gt)
 
@@ -142,9 +135,8 @@ def kitti_eval(pose_est, dec_est, pose_gt):
     t_rel = t_rel * 100
     r_rel = r_rel / np.pi * 180 * 100
     r_rmse = r_rmse / np.pi * 180
-    usage = np.mean(dec_est) * 100
 
-    return pose_est_mat, pose_gt_mat, t_rel, r_rel, t_rmse, r_rmse, usage, speed
+    return pose_est_mat, pose_gt_mat, t_rel, r_rel, t_rmse, r_rmse, speed
 
 def kitti_err_cal(pose_est_mat, pose_gt_mat):
 
@@ -175,11 +167,7 @@ def kitti_err_cal(pose_est_mat, pose_gt_mat):
     t_rel, r_rel = computeOverallErr(err)
     return err, t_rel, r_rel, np.asarray(speed)
 
-def plotPath_2D(seq, poses_gt_mat, poses_est_mat, plot_path_dir, decision, speed, window_size):
-    
-    # Apply smoothing to the decision
-    decision = np.insert(decision, 0, 1)
-    decision = moving_average(decision, window_size)
+def plotPath_2D(seq, poses_gt_mat, poses_est_mat, plot_path_dir, speed, window_size):
 
     fontsize_ = 10
     plot_keys = ["Ground Truth", "Ours"]
@@ -223,29 +211,6 @@ def plotPath_2D(seq, poses_gt_mat, poses_est_mat, plot_path_dir, decision, speed
     plt.savefig(plot_path_dir + "/" + png_title + ".png", bbox_inches='tight', pad_inches=0.1)
     plt.close()
 
-    # Plot decision hearmap
-    fig = plt.figure(figsize=(8, 6), dpi=100)
-    ax = plt.gca()
-    cout = np.insert(decision, 0, 0) * 100
-    cax = plt.scatter(x_pred, z_pred, marker='o', c=cout)
-    plt.xlabel('x (m)', fontsize=fontsize_)
-    plt.ylabel('z (m)', fontsize=fontsize_)
-    xlim = ax.get_xlim()
-    ylim = ax.get_ylim()
-    xmean = np.mean(xlim)
-    ymean = np.mean(ylim)
-    ax.set_xlim([xmean - plot_radius, xmean + plot_radius])
-    ax.set_ylim([ymean - plot_radius, ymean + plot_radius])
-    max_usage = max(cout)
-    min_usage = min(cout)
-    ticks = np.floor(np.linspace(min_usage, max_usage, num=5))
-    cbar = fig.colorbar(cax, ticks=ticks)
-    cbar.ax.set_yticklabels([str(i) + '%' for i in ticks])
-
-    plt.title('decision heatmap with window size {}'.format(window_size))
-    png_title = "{}_decision_smoothed".format(seq)
-    plt.savefig(plot_path_dir + "/" + png_title + ".png", bbox_inches='tight', pad_inches=0.1)
-    plt.close()
 
     # Plot the speed map
     fig = plt.figure(figsize=(8, 6), dpi=100)

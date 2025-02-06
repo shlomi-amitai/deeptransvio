@@ -79,8 +79,8 @@ def update_status(ep, args, model):
         lr = args.lr_joint
         selection = 'gumbel-softmax'
         temp = args.temp_init * math.exp(-args.eta * (ep-args.epochs_warmup))
-        for param in model.module.Policy_net.parameters(): # Enable the policy network
-            param.requires_grad = True
+        # for param in model.module.Policy_net.parameters(): # Enable the policy network
+        #     param.requires_grad = True
     elif ep >= args.epochs_warmup + args.epochs_joint: # Finetuning stage
         lr = args.lr_fine
         selection = 'gumbel-softmax'
