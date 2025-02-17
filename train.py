@@ -47,7 +47,7 @@ parser.add_argument('--epochs_joint', type=int, default=40, help='number of epoc
 parser.add_argument('--epochs_fine', type=int, default=20, help='number of epochs for finetuning')
 parser.add_argument('--lr_warmup', type=float, default=5e-4, help='learning rate for warming up stage')
 parser.add_argument('--lr_joint', type=float, default=5e-5, help='learning rate for joint training stage')
-parser.add_argument('--lr_fine', type=float, default=1e-6, help='learning rate for finetuning stage')
+parser.add_argument('--lr_fine', type=float, default=1e-5, help='learning rate for finetuning stage')
 parser.add_argument('--eta', type=float, default=0.05, help='exponential decay factor for temperature')
 parser.add_argument('--temp_init', type=float, default=5, help='initial temperature for gumbel-softmax')
 parser.add_argument('--Lambda', type=float, default=3e-5, help='penalty factor for the visual encoder usage')
@@ -80,8 +80,8 @@ def update_status(ep, args, model):
         lr = args.lr_joint
         selection = 'gumbel-softmax'
         temp = args.temp_init * math.exp(-args.eta * (ep-args.epochs_warmup))
-        for param in model.module.Policy_net.parameters(): # Enable the policy network
-            param.requires_grad = True
+        # for param in model.module.Policy_net.parameters(): # Enable the policy network
+        #     param.requires_grad = True
     elif ep >= args.epochs_warmup + args.epochs_joint: # Finetuning stage
         lr = args.lr_fine
         selection = 'gumbel-softmax'
@@ -257,13 +257,12 @@ def main():
             r_rel = np.mean([errors[i]['r_rel'] for i in range(len(errors))])
             t_rmse = np.mean([errors[i]['t_rmse'] for i in range(len(errors))])
             r_rmse = np.mean([errors[i]['r_rmse'] for i in range(len(errors))])
-            usage = np.mean([errors[i]['usage'] for i in range(len(errors))])
 
             if t_rel < best:
                 best = t_rel 
                 torch.save(model.module.state_dict(), f'{checkpoints_dir}/best_{best:.2f}.pth')
         
-            message = f'Epoch {ep} evaluation finished , t_rel: {t_rel:.4f}, r_rel: {r_rel:.4f}, t_rmse: {t_rmse:.4f}, r_rmse: {r_rmse:.4f}, usage: {usage:.4f}, best t_rel: {best:.4f}'
+            message = f'Epoch {ep} evaluation finished , t_rel: {t_rel:.4f}, r_rel: {r_rel:.4f}, t_rmse: {t_rmse:.4f}, r_rmse: {r_rmse:.4f}, best t_rel: {best:.4f}'
             logger.info(message)
             print(message)
     

@@ -85,7 +85,6 @@ def main():
     for i, seq in enumerate(args.val_seq):
         message = f"Seq: {seq}, t_rel: {tester.errors[i]['t_rel']:.4f}, r_rel: {tester.errors[i]['r_rel']:.4f}, "
         message += f"t_rmse: {tester.errors[i]['t_rmse']:.4f}, r_rmse: {tester.errors[i]['r_rmse']:.4f}, "
-        message += f"usage: {tester.errors[i]['usage']:.4f}"
         print(message)
     
     
