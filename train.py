@@ -5,6 +5,7 @@ import logging
 from path import Path
 from utils import custom_transform
 from dataset.KITTI_dataset import KITTI, KITTISmallDataset
+from dataset.Aqua_dataset import Aqua
 from model import DeepVIO
 from collections import defaultdict
 from utils.kitti_eval import KITTI_tester
@@ -161,10 +162,11 @@ def main():
     if args.color:
         transform_train += [custom_transform.RandomColorAug()]
     transform_train = custom_transform.Compose(transform_train)
-
-    train_dataset = KITTI(args.data_dir,
+    train_seqs = [1]
+    root_dir = Path('/Users/shlomia/work/my_repo/deeptransvio/aqua_data/')
+    train_dataset = Aqua(root_dir,
                         sequence_length=args.seq_len,
-                        train_seqs=args.train_seq,
+                        train_seqs=train_seqs,
                         transform=transform_train
                         )
     logger.info('train_dataset: ' + str(train_dataset))
