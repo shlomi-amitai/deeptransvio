@@ -219,9 +219,9 @@ class Encoder(nn.Module):
         __tmp = self.encode_image(__tmp)
 
         self.visual_head = nn.Linear(int(np.prod(__tmp.size())), opt.v_f_len)
-        # self.inertial_encoder = Inertial_encoder(opt)
+        self.inertial_encoder = Inertial_encoder(opt)
         # self.inertial_encoder = Inertial_temporal_encoder(opt)
-        self.inertial_encoder = image_Inertial_Encoder(opt)
+        # self.inertial_encoder = image_Inertial_Encoder(opt)
         # self.inertial_encoder = CrossSequenceAttentionEncoder(opt)
 
     def forward(self, img, imu):
