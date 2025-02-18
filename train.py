@@ -9,6 +9,7 @@ from dataset.Aqua_dataset import Aqua
 from model import DeepVIO
 from collections import defaultdict
 from utils.kitti_eval import KITTI_tester
+from utils.aqua_eval import Aqua_tester
 import numpy as np
 import math
 
@@ -202,7 +203,10 @@ def main():
         torch.cuda.set_device(gpu_ids[0])
     
     # Initialize the tester
-    tester = KITTI_tester(args)
+    if aqua_ds:
+        tester = Aqua_tester(args)
+    else:
+        tester = KITTI_tester(args)
 
     # Model initialization
     model = DeepVIO(args)
