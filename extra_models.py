@@ -104,7 +104,7 @@ def create_inertial_image(self, x):
     batch_size, seq_len, window_size, channels = x.shape
 
     # Preprocess the inertial data
-    x = preprocess_inertial_data(x)
+    # x = preprocess_inertial_data(x)
 
     # Reshape to use seq_len as channels: [batch_size, seq_len, 11, 6]
     inertial_image = x.permute(0, 1, 2, 3)

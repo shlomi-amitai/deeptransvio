@@ -7,7 +7,8 @@ import torch
 from torch.utils.data import Dataset
 import scipy.io as sio
 from path import Path
-from utils.utils import rotationError, read_pose_from_text
+from utils.utils import rotationError, get_relative_pose_6DoF
+
 from utils import custom_transform
 from collections import Counter
 from scipy.ndimage import gaussian_filter1d
