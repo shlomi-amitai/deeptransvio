@@ -98,11 +98,12 @@ def train(model, optimizer, train_loader, selection, temp, logger, ep, p=0.5, we
 
         imgs = imgs.cuda().float()
         imus = imus.cuda().float()
-        gts = gts.cuda().float() 
+        gts = gts.cuda().float()
         weight = weight.cuda().float()
 
         optimizer.zero_grad()
-                
+        if imgs.size(2) < 3:
+            imgs = imgs.repeat(1, 1, 3, 1, 1)
         poses, _ = model(imgs, imus, is_first=True, hc=None, temp=temp, selection=selection, p=p)
         
         if not weighted:
@@ -162,13 +163,24 @@ def main():
     if args.color:
         transform_train += [custom_transform.RandomColorAug()]
     transform_train = custom_transform.Compose(transform_train)
-    train_seqs = [1]
-    root_dir = Path('/Users/shlomia/work/my_repo/deeptransvio/aqua_data/')
-    train_dataset = Aqua(root_dir,
-                        sequence_length=args.seq_len,
-                        train_seqs=train_seqs,
-                        transform=transform_train
-                        )
+
+    root_dir = Path('./data/')
+    aqua_ds=True
+    if aqua_ds:
+        train_seqs = [1]
+        root_dir = Path('./aqua_data/')
+        train_dataset = Aqua(root_dir,
+                            sequence_length=args.seq_len,
+                            train_seqs=train_seqs,
+                            transform=transform_train
+                            )
+    else:
+        train_dataset = KITTI(root_dir,
+                            sequence_length=args.seq_len,
+                            train_seqs=args.train_seq,
+                            transform=transform_train
+                            )
+
     logger.info('train_dataset: ' + str(train_dataset))
     
     train_loader = torch.utils.data.DataLoader(
