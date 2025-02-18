@@ -23,7 +23,7 @@ IMU_FREQ = 10
 class Aqua(Dataset):
     def __init__(self, root,
                  sequence_length=11,
-                 train_seqs=[0, 1, 2, 4, 6, 8, 9],
+                 train_seqs=[1],
                  transform=None):
 
         self.root = Path(root)
@@ -103,6 +103,8 @@ class Aqua(Dataset):
             for i in range(len(fpaths) - self.sequence_length):
                 img_samples = fpaths[i:i + self.sequence_length]
                 imu_samples = imus[i * IMU_FREQ:(i + self.sequence_length - 1) * IMU_FREQ + 1]
+                if imu_samples.shape[0]!= 101:
+                    continue
                 pose_samples = poses[i:i + self.sequence_length]
                 pose_rel_samples = poses_rel[i+1:i + self.sequence_length]  # Start from i+1 to match the number of relative poses
                 segment_rot = rotationError(pose_samples[0], pose_samples[-1])
