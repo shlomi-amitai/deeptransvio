@@ -106,11 +106,14 @@ class Aqua(Dataset):
                 pose_samples = poses[i:i + self.sequence_length]
                 pose_rel_samples = poses_rel[i+1:i + self.sequence_length]  # Start from i+1 to match the number of relative poses
                 segment_rot = rotationError(pose_samples[0], pose_samples[-1])
+
+                # Convert pose_rel_samples to 6-parameter format using get_relative_pose_6DoF
+                pose_rel_6param = [get_relative_pose_6DoF(np.eye(4), pose_mat) for pose_mat in pose_rel_samples]
+
+                # # Convert pose_rel_samples to 12-parameter format
+                # pose_rel_12param = [pose_mat[:3, :].flatten() for pose_mat in pose_rel_samples]
                 
-                # Convert pose_rel_samples to 12-parameter format
-                pose_rel_12param = [pose_mat[:3, :].flatten() for pose_mat in pose_rel_samples]
-                
-                sample = {'imgs': img_samples, 'imus': imu_samples, 'gts': pose_rel_12param, 'rot': segment_rot}
+                sample = {'imgs': img_samples, 'imus': imu_samples, 'gts': pose_rel_6param, 'rot': segment_rot}
                 sequence_set.append(sample)
         self.samples = sequence_set
     
