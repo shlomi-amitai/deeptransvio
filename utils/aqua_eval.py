@@ -137,10 +137,21 @@ def saveSequence(poses, filename):
 
 
 
+import os
+import numpy as np
+import torch
+from torch.utils.data import Dataset, DataLoader
+from path import Path
+import pandas as pd
+from scipy.spatial.transform import Rotation
+from utils.utils import get_relative_pose_6DoF
+from PIL import Image
+
 class AquaSequenceDataset(Dataset):
-    def __init__(self, root_dir, sequence, transform=None):
+    def __init__(self, root_dir, sequence, sequence_length=11, transform=None):
         self.root_dir = Path(root_dir)
         self.sequence = sequence
+        self.sequence_length = sequence_length
         self.transform = transform
         
         self.image_dir = self.root_dir / 'sequences' / f'images_sequence_{sequence:01d}'
@@ -176,29 +187,71 @@ class AquaSequenceDataset(Dataset):
         return poses_rel
 
     def __len__(self):
-        return len(self.images) - 1  # We need pairs of images
+        return len(self.images) - self.sequence_length + 1
 
     def __getitem__(self, idx):
-        img1_path = self.images[idx]
-        img2_path = self.images[idx + 1]
+        img_sequence = []
+        for i in range(self.sequence_length):
+            img_path = self.images[idx + i]
+            img = Image.open(img_path).convert('RGB')
+            if self.transform:
+                img = self.transform(img)
+            img_sequence.append(img)
         
-        img1 = Image.open(img1_path).convert('RGB')
-        img2 = Image.open(img2_path).convert('RGB')
+        imgs = torch.stack(img_sequence, 0)
         
-        if self.transform:
-            img1 = self.transform(img1)
-            img2 = self.transform(img2)
-        
-        # Stack images to match the expected format
-        imgs = torch.stack([img1, img2], 0)
-        
-        imu = self.imus[idx * 10:(idx + 1) * 10 + 1]  # Assuming 10Hz IMU data between frames
+        imu = self.imus[idx * 10:(idx + self.sequence_length - 1) * 10 + 1]
         imu = torch.from_numpy(imu).float()
         
-        pose = self.poses_rel[idx]
-        pose = torch.from_numpy(pose).float()
+        poses = self.poses_rel[idx:idx + self.sequence_length - 1]
+        poses = torch.from_numpy(np.array(poses)).float()
+        
+        return imgs, imu, poses
 
-        return imgs, imu, pose
+def data_partition(args, sequence):
+    root_dir = Path('./aqua_data/')
+    
+    dataset = AquaSequenceDataset(root_dir, sequence, sequence_length=args.sequence_length, transform=args.transform)
+    
+    dataloader = DataLoader(
+        dataset,
+        batch_size=args.batch_size,
+        shuffle=False,
+        num_workers=args.workers,
+        pin_memory=True
+    )
+    
+    return dataloader
+
+class Aqua_tester():
+    def __init__(self, args):
+        super(Aqua_tester, self).__init__()
+        
+        # generate data loader for each path
+        self.dataloader = []
+        for seq in args.val_seq:
+            self.dataloader.append(data_partition(args, seq))
+
+        self.args = args
+
+    def test(self, net):
+        for seq, df in enumerate(self.dataloader):
+            pose_est = self.test_one_path(net, df)
+            # Process and save results for this sequence
+            # You'll need to implement this part based on your specific requirements
+
+    def test_one_path(self, net, df):
+        pose_list = []
+        for i, (image_seq, imu_seq, gt_seq) in enumerate(df):
+            x_in = image_seq.cuda()
+            i_in = imu_seq.cuda()
+            with torch.no_grad():
+                pose = net(x_in, i_in)
+            pose_list.append(pose.detach().cpu().numpy())
+        pose_est = np.concatenate(pose_list, axis=0)
+        return pose_est
+
+    # Add other methods as needed for evaluation
 
 def data_partition(args, sequence):
     root_dir = Path('./aqua_data/')
