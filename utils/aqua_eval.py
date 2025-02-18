@@ -1,18 +1,136 @@
+import os
+import glob
 import numpy as np
-import matplotlib.pyplot as plt
-from tqdm import tqdm
+import time
+import scipy.io as sio
 import torch
-from utils.utils import rotationError, translationError, path_accu, rmse_err_cal
-from torch.utils.data import Dataset, DataLoader
-from path import Path
+from PIL import Image
+import torchvision.transforms.functional as TF
+import matplotlib.pyplot as plt
+import math
+from utils.utils import *
+from tqdm import tqdm
 import pandas as pd
-from scipy.spatial.transform import Rotation
-from utils.utils import get_relative_pose_6DoF
+from scipy.spatial.transform import Rotation, Slerp
+from scipy.interpolate import interp1d
 
-class Aqua_tester():
+class data_partition():
+    def __init__(self, opt, folder):
+        super(data_partition, self).__init__()
+        self.opt = opt
+        self.data_dir = opt.data_dir
+        self.seq_len = opt.seq_len
+        self.folder = folder
+        self.load_data()
+
+    def load_data(self):
+        image_dir = self.data_dir + '/sequences/'
+        imu_dir = self.data_dir + '/imus/'
+        pose_dir = self.data_dir + '/poses/'
+
+        self.img_paths = glob.glob('{}/images_sequence_{}*.png'.format(image_dir, self.folder))
+        imu_file = imu_dir / 'imu_sequence_{}.csv'.format(self.folder)
+        self.imus = pd.read_csv(imu_file, header=None)
+        self.imus = self.imus.iloc[1:, 1:].astype(float).values
+        self.poses, self.poses_rel = read_pose_from_text('{}{}.txt'.format(pose_dir, self.folder))
+
+        pose_file = pose_dir / 'new_archaeo_colmap_traj_sequence_{}.txt'.format(self.folder)
+        with open(pose_file, 'r') as f:
+            poses_raw = [line.strip().split() for line in f]
+
+        # Convert poses to 4x4 matrices
+        poses = []
+        timestamps = []
+        for pose in poses_raw:
+            img_num, tx, ty, tz, qx, qy, qz, qw = map(float, pose)
+            rotation = Rotation.from_quat([qx, qy, qz, qw])
+            translation = np.array([tx, ty, tz])
+            pose_matrix = np.eye(4)
+            pose_matrix[:3, :3] = rotation.as_matrix()
+            pose_matrix[:3, 3] = translation
+            poses.append(pose_matrix)
+            timestamps.append(img_num)
+
+        # Interpolate poses
+        interpolated_poses = []
+        for i in range(len(timestamps) - 1):
+            start_time, end_time = timestamps[i], timestamps[i + 1]
+            start_pose, end_pose = poses[i], poses[i + 1]
+
+            # Create interpolation times
+            interp_times = np.arange(start_time, end_time)
+
+            # Interpolate translation
+            start_trans = start_pose[:3, 3]
+            end_trans = end_pose[:3, 3]
+            trans_interp = interp1d([start_time, end_time], np.vstack((start_trans, end_trans)).T)
+
+            # Interpolate rotation
+            start_rot = Rotation.from_matrix(start_pose[:3, :3])
+            end_rot = Rotation.from_matrix(end_pose[:3, :3])
+            key_rots = Rotation.from_matrix(np.stack((start_pose[:3, :3], end_pose[:3, :3])))
+            key_times = [start_time, end_time]
+            slerp = Slerp(key_times, key_rots)
+
+            # Generate interpolated poses
+            for t in interp_times:
+                inter_trans = trans_interp(t)
+                inter_rot = slerp(t)
+
+                inter_pose = np.eye(4)
+                inter_pose[:3, :3] = inter_rot.as_matrix()
+                inter_pose[:3, 3] = inter_trans
+
+                interpolated_poses.append(inter_pose)
+
+        # Add the last pose
+        interpolated_poses.append(poses[-1])
+
+        # Replace the original poses with interpolated poses
+        poses = interpolated_poses
+
+        # Calculate relative poses
+        poses_rel = [np.eye(4)]  # First relative pose is identity
+        for i in range(1, len(poses)):
+            poses_rel.append(np.linalg.inv(poses[i - 1]) @ poses[i])
+
+
+        self.img_paths.sort()
+
+        self.img_paths_list, self.poses_list, self.imus_list = [], [], []
+        start = 0
+        n_frames = len(self.img_paths)
+        while start + self.seq_len < n_frames:
+            self.img_paths_list.append(self.img_paths[start:start + self.seq_len])
+            self.poses_list.append(self.poses_rel[start:start + self.seq_len - 1])
+            self.imus_list.append(self.imus[start * 10:(start + self.seq_len - 1) * 10 + 1])
+            start += self.seq_len - 1
+        self.img_paths_list.append(self.img_paths[start:])
+        self.poses_list.append(self.poses_rel[start:])
+        self.imus_list.append(self.imus[start * 10:])
+
+    def __len__(self):
+        return len(self.img_paths_list)
+
+    def __getitem__(self, i):
+        image_path_sequence = self.img_paths_list[i]
+        image_sequence = []
+        for img_path in image_path_sequence:
+            img_as_img = Image.open(img_path)
+            img_as_img = TF.resize(img_as_img, size=(self.opt.img_h, self.opt.img_w))
+            img_as_tensor = TF.to_tensor(img_as_img) - 0.5
+            img_as_tensor = img_as_tensor.unsqueeze(0)
+            image_sequence.append(img_as_tensor)
+        image_sequence = torch.cat(image_sequence, 0)
+        imu_sequence = torch.FloatTensor(self.imus_list[i])
+        gt_sequence = self.poses_list[i][:, :6]
+        return image_sequence, imu_sequence, gt_sequence
+
+
+class KITTI_tester():
     def __init__(self, args):
-        super(Aqua_tester, self).__init__()
-        
+        super(KITTI_tester, self).__init__()
+
         # generate data loader for each path
         self.dataloader = []
         for seq in args.val_seq:
@@ -20,17 +138,21 @@ class Aqua_tester():
 
         self.args = args
 
-    # ... (rest of the class implementation remains the same)
+    def generate_extended_plots(self, result_dir):
+        for i, seq in enumerate(self.args.val_seq):
+            pose_est_global = self.est[i]['pose_est_global']
+            pose_gt_global = self.est[i]['pose_gt_global']
+            plotExtendedAnalysis(seq, pose_gt_global, pose_est_global, result_dir)
 
     def test_one_path(self, net, df, selection, num_gpu=1, p=0.5):
         hc = None
-        pose_list = []
-        for i, (image_seq, imu_seq, gt_seq) in tqdm(enumerate(df), total=len(df), smoothing=0.9):  
-            x_in = image_seq.unsqueeze(0).repeat(num_gpu,1,1,1,1).cuda()
-            i_in = imu_seq.unsqueeze(0).repeat(num_gpu,1,1).cuda()
+        pose_list, decision_list, probs_list = [], [], []
+        for i, (image_seq, imu_seq, gt_seq) in tqdm(enumerate(df), total=len(df), smoothing=0.9):
+            x_in = image_seq.unsqueeze(0).repeat(num_gpu, 1, 1, 1, 1).cuda()
+            i_in = imu_seq.unsqueeze(0).repeat(num_gpu, 1, 1).cuda()
             with torch.no_grad():
-                pose, hc = net(x_in, i_in, is_first=(i==0), hc=hc, selection=selection, p=p)
-            pose_list.append(pose[0,:,:].detach().cpu().numpy())
+                pose, hc = net(x_in, i_in, is_first=(i == 0), hc=hc, selection=selection, p=p)
+            pose_list.append(pose[0, :, :].detach().cpu().numpy())
         pose_est = np.vstack(pose_list)
         return pose_est
 
@@ -40,67 +162,81 @@ class Aqua_tester():
         for i, seq in enumerate(self.args.val_seq):
             print(f'testing sequence {seq}')
             pose_est = self.test_one_path(net, self.dataloader[i], selection, num_gpu=num_gpu, p=p)
-            pose_est_global, pose_gt_global, t_rel, r_rel, t_rmse, r_rmse = aqua_eval(pose_est, self.dataloader[i].poses_rel)
-            
-            self.est.append({'pose_est_global':pose_est_global, 'pose_gt_global':pose_gt_global})
-            self.errors.append({'t_rel':t_rel, 'r_rel':r_rel, 't_rmse':t_rmse, 'r_rmse':r_rmse})
-            
+            pose_est_global, pose_gt_global, t_rel, r_rel, t_rmse, r_rmse, speed = kitti_eval(pose_est, self.dataloader[
+                i].poses_rel)
+
+            self.est.append({'pose_est_global': pose_est_global, 'pose_gt_global': pose_gt_global, 'speed': speed})
+            self.errors.append({'t_rel': t_rel, 'r_rel': r_rel, 't_rmse': t_rmse, 'r_rmse': r_rmse})
+
         return self.errors
 
-    def generate_plots(self, save_dir):
+    def generate_plots(self, save_dir, window_size):
         for i, seq in enumerate(self.args.val_seq):
-            plotPath_3D(seq, 
-                        self.est[i]['pose_gt_global'], 
-                        self.est[i]['pose_est_global'], 
-                        save_dir)
-    
+            plotPath_2D(seq,
+                        self.est[i]['pose_gt_global'],
+                        self.est[i]['pose_est_global'],
+                        save_dir,
+                        self.est[i]['speed'],
+                        window_size)
+
     def save_text(self, save_dir):
         for i, seq in enumerate(self.args.val_seq):
-            path = save_dir/'{}_pred.txt'.format(seq)
+            path = save_dir / '{}_pred.txt'.format(seq)
             saveSequence(self.est[i]['pose_est_global'], path)
             print('Seq {} saved'.format(seq))
 
-def aqua_eval(pose_est, pose_gt):
+
+def kitti_eval(pose_est, pose_gt):
     # Calculate the translational and rotational RMSE
     t_rmse, r_rmse = rmse_err_cal(pose_est, pose_gt)
 
-    # Transfer to 4x4 pose matrix
+    # Transfer to 3x4 pose matrix
     pose_est_mat = path_accu(pose_est)
     pose_gt_mat = path_accu(pose_gt)
 
-    # Calculate relative errors
-    t_rel, r_rel = relative_error_calc(pose_est_mat, pose_gt_mat)
-    
+    # Using KITTI metric
+    err_list, t_rel, r_rel, speed = kitti_err_cal(pose_est_mat, pose_gt_mat)
+
     t_rel = t_rel * 100
     r_rel = r_rel / np.pi * 180 * 100
     r_rmse = r_rmse / np.pi * 180
 
-    return pose_est_mat, pose_gt_mat, t_rel, r_rel, t_rmse, r_rmse
+    return pose_est_mat, pose_gt_mat, t_rel, r_rel, t_rmse, r_rmse, speed
 
-def relative_error_calc(pose_est_mat, pose_gt_mat):
-    t_rel = 0
-    r_rel = 0
-    step_size = 10  # Adjust as needed
 
-    for i in range(0, len(pose_gt_mat) - step_size, step_size):
-        pose_delta_gt = np.dot(np.linalg.inv(pose_gt_mat[i]), pose_gt_mat[i + step_size])
-        pose_delta_est = np.dot(np.linalg.inv(pose_est_mat[i]), pose_est_mat[i + step_size])
+def kitti_err_cal(pose_est_mat, pose_gt_mat):
+    lengths = [100, 200, 300, 400, 500, 600, 700, 800]
+    num_lengths = len(lengths)
 
-        r_err = rotationError(pose_delta_est, pose_delta_gt)
-        t_err = translationError(pose_delta_est, pose_delta_gt)
+    err = []
+    dist, speed = trajectoryDistances(pose_gt_mat)
+    step_size = 10  # 10Hz
 
-        t_rel += t_err / np.linalg.norm(pose_delta_gt[:3, 3])
-        r_rel += r_err
+    for first_frame in range(0, len(pose_gt_mat), step_size):
 
-    t_rel /= (len(pose_gt_mat) - step_size) / step_size
-    r_rel /= (len(pose_gt_mat) - step_size) / step_size
+        for i in range(num_lengths):
+            len_ = lengths[i]
+            last_frame = lastFrameFromSegmentLength(dist, first_frame, len_)
+            # Continue if sequence not long enough
+            if last_frame == -1 or last_frame >= len(pose_est_mat) or first_frame >= len(pose_est_mat):
+                continue
 
-    return t_rel, r_rel
+            pose_delta_gt = np.dot(np.linalg.inv(pose_gt_mat[first_frame]), pose_gt_mat[last_frame])
+            pose_delta_result = np.dot(np.linalg.inv(pose_est_mat[first_frame]), pose_est_mat[last_frame])
 
-def plotPath_3D(seq, poses_gt_mat, poses_est_mat, plot_path_dir):
+            r_err = rotationError(pose_delta_result, pose_delta_gt)
+            t_err = translationError(pose_delta_result, pose_delta_gt)
+
+            err.append([first_frame, r_err / len_, t_err / len_, len_])
+
+    t_rel, r_rel = computeOverallErr(err)
+    return err, t_rel, r_rel, np.asarray(speed)
+
+
+def plotPath_2D(seq, poses_gt_mat, poses_est_mat, plot_path_dir, speed, window_size):
     fontsize_ = 10
     plot_keys = ["Ground Truth", "Ours"]
-    start_point = [0, 0, 0]
+    start_point = [0, 0]
     style_pred = 'b-'
     style_gt = 'r-'
     style_O = 'ko'
@@ -114,156 +250,114 @@ def plotPath_3D(seq, poses_gt_mat, poses_est_mat, plot_path_dir):
     y_pred = np.asarray([pose[1, 3] for pose in poses_est_mat])
     z_pred = np.asarray([pose[2, 3] for pose in poses_est_mat])
 
-    # Plot 3D trajectory
-    fig = plt.figure(figsize=(10, 10), dpi=100)
-    ax = fig.add_subplot(111, projection='3d')
-    ax.plot(x_gt, y_gt, z_gt, style_gt, label=plot_keys[0])
-    ax.plot(x_pred, y_pred, z_pred, style_pred, label=plot_keys[1])
-    ax.plot([start_point[0]], [start_point[1]], [start_point[2]], style_O, label='Start Point')
-    ax.legend(loc="upper right", prop={'size': fontsize_})
-    ax.set_xlabel('X (m)', fontsize=fontsize_)
-    ax.set_ylabel('Y (m)', fontsize=fontsize_)
-    ax.set_zlabel('Z (m)', fontsize=fontsize_)
+    # Plot 2d trajectory estimation map
+    fig = plt.figure(figsize=(6, 6), dpi=100)
+    ax = plt.gca()
+    plt.plot(x_gt, z_gt, style_gt, label=plot_keys[0])
+    plt.plot(x_pred, z_pred, style_pred, label=plot_keys[1])
+    plt.plot(start_point[0], start_point[1], style_O, label='Start Point')
+    plt.legend(loc="upper right", prop={'size': fontsize_})
+    plt.xlabel('x (m)', fontsize=fontsize_)
+    plt.ylabel('z (m)', fontsize=fontsize_)
+    # set the range of x and y
+    xlim = ax.get_xlim()
+    ylim = ax.get_ylim()
+    xmean = np.mean(xlim)
+    ymean = np.mean(ylim)
+    plot_radius = max([abs(lim - mean_)
+                       for lims, mean_ in ((xlim, xmean),
+                                           (ylim, ymean))
+                       for lim in lims])
+    ax.set_xlim([xmean - plot_radius, xmean + plot_radius])
+    ax.set_ylim([ymean - plot_radius, ymean + plot_radius])
 
-    plt.title('3D path')
-    png_title = "{}_path_3d".format(seq)
+    plt.title('2D path')
+    png_title = "{}_path_2d".format(seq)
     plt.savefig(plot_path_dir + "/" + png_title + ".png", bbox_inches='tight', pad_inches=0.1)
     plt.close()
 
-def saveSequence(poses, filename):
-    with open(filename, 'w') as f:
-        for pose in poses:
-            f.write(' '.join([str(v) for v in pose[:3, :].flatten()]) + '\n')
+    # Plot the speed map
+    fig = plt.figure(figsize=(8, 6), dpi=100)
+    ax = plt.gca()
+    cout = speed
+    cax = plt.scatter(x_pred, z_pred, marker='o', c=cout)
+    plt.xlabel('x (m)', fontsize=fontsize_)
+    plt.ylabel('z (m)', fontsize=fontsize_)
+    xlim = ax.get_xlim()
+    ylim = ax.get_ylim()
+    xmean = np.mean(xlim)
+    ymean = np.mean(ylim)
+    ax.set_xlim([xmean - plot_radius, xmean + plot_radius])
+    ax.set_ylim([ymean - plot_radius, ymean + plot_radius])
+    max_speed = max(cout)
+    min_speed = min(cout)
+    ticks = np.floor(np.linspace(min_speed, max_speed, num=5))
+    cbar = fig.colorbar(cax, ticks=ticks)
+    cbar.ax.set_yticklabels([str(i) + 'm/s' for i in ticks])
+
+    plt.title('speed heatmap')
+    png_title = "{}_speed".format(seq)
+    plt.savefig(plot_path_dir + "/" + png_title + ".png", bbox_inches='tight', pad_inches=0.1)
+    plt.close()
 
 
+def plotExtendedAnalysis(seq, poses_gt_mat, poses_est_mat, plot_path_dir):
+    fontsize_ = 10
+    plot_keys = ["Ground Truth", "Ours"]
 
-import os
-import numpy as np
-import torch
-from torch.utils.data import Dataset, DataLoader
-from path import Path
-import pandas as pd
-from scipy.spatial.transform import Rotation
-from utils.utils import get_relative_pose_6DoF
-from PIL import Image
+    # Extract x, y, z coordinates
+    x_gt = np.asarray([pose[0, 3] for pose in poses_gt_mat])
+    y_gt = np.asarray([pose[1, 3] for pose in poses_gt_mat])
+    z_gt = np.asarray([pose[2, 3] for pose in poses_gt_mat])
 
-class AquaSequenceDataset(Dataset):
-    def __init__(self, root_dir, sequence, sequence_length=11, transform=None):
-        self.root_dir = Path(root_dir)
-        self.sequence = sequence
-        self.sequence_length = sequence_length
-        self.transform = transform
-        
-        self.image_dir = self.root_dir / 'sequences' / f'images_sequence_{sequence:01d}'
-        self.imu_file = self.root_dir / 'imus' / f'imu_sequence_{sequence:01d}.csv'
-        self.pose_file = self.root_dir / 'poses' / f'new_archaeo_colmap_traj_sequence_{sequence:02d}.txt'
-        
-        self.images = sorted(self.image_dir.files('*.png'))
-        self.imus = pd.read_csv(self.imu_file, header=None)
-        self.imus = self.imus.iloc[1:, 1:].astype(float).values
-        
-        self.poses = self.load_poses()
-        self.poses_rel = self.get_relative_poses()
+    x_pred = np.asarray([pose[0, 3] for pose in poses_est_mat])
+    y_pred = np.asarray([pose[1, 3] for pose in poses_est_mat])
+    z_pred = np.asarray([pose[2, 3] for pose in poses_est_mat])
 
-    def load_poses(self):
-        poses = []
-        with open(self.pose_file, 'r') as f:
-            for line in f:
-                values = list(map(float, line.strip().split()))
-                t = values[1:4]
-                q = values[4:]  # [qx, qy, qz, qw]
-                R = Rotation.from_quat(q).as_matrix()
-                T = np.eye(4)
-                T[:3, :3] = R
-                T[:3, 3] = t
-                poses.append(T)
-        return poses
+    fig, (ax1, ax2, ax3) = plt.subplots(3, 1, figsize=(10, 15), dpi=100)
 
-    def get_relative_poses(self):
-        poses_rel = []
-        for i in range(1, len(self.poses)):
-            rel_pose = get_relative_pose_6DoF(self.poses[i-1], self.poses[i])
-            poses_rel.append(rel_pose)
-        return poses_rel
+    # 1. Scale difference plot (top subplot)
+    path_length_gt = np.cumsum(np.sqrt(np.diff(x_gt) ** 2 + np.diff(y_gt) ** 2 + np.diff(z_gt) ** 2))
+    path_length_pred = np.cumsum(np.sqrt(np.diff(x_pred) ** 2 + np.diff(y_pred) ** 2 + np.diff(z_pred) ** 2))
+    ax1.plot(path_length_gt, label='Ground Truth')
+    ax1.plot(path_length_pred, label='Prediction')
+    ax1.set_xlabel('Step', fontsize=fontsize_)
+    ax1.set_ylabel('Cumulative Path Length (m)', fontsize=fontsize_)
+    ax1.legend(loc="upper left", prop={'size': fontsize_})
+    ax1.set_title('Scale Comparison')
 
-    def __len__(self):
-        return len(self.images) - self.sequence_length + 1
+    # 2. Y-axis error plot (middle subplot)
+    y_error = y_pred - y_gt
+    ax2.plot(y_error, label='Y-axis Error')
+    ax2.set_xlabel('Step', fontsize=fontsize_)
+    ax2.set_ylabel('Y-axis Error (m)', fontsize=fontsize_)
+    ax2.axhline(y=0, color='r', linestyle='--')
+    ax2.legend(loc="upper right", prop={'size': fontsize_})
+    ax2.set_title('Y-axis Error')
 
-    def __getitem__(self, idx):
-        img_sequence = []
-        for i in range(self.sequence_length):
-            img_path = self.images[idx + i]
-            img = Image.open(img_path).convert('RGB')
-            if self.transform:
-                img = self.transform(img)
-            img_sequence.append(img)
-        
-        imgs = torch.stack(img_sequence, 0)
-        
-        imu = self.imus[idx * 10:(idx + self.sequence_length - 1) * 10 + 1]
-        imu = torch.from_numpy(imu).float()
-        
-        poses = self.poses_rel[idx:idx + self.sequence_length - 1]
-        poses = torch.from_numpy(np.array(poses)).float()
-        
-        return imgs, imu, poses
+    # 3. 3D error magnitude plot (bottom subplot)
+    error_3d = np.sqrt((x_pred - x_gt) ** 2 + (y_pred - y_gt) ** 2 + (z_pred - z_gt) ** 2)
+    ax3.plot(error_3d, label='3D Error Magnitude')
+    ax3.set_xlabel('Step', fontsize=fontsize_)
+    ax3.set_ylabel('3D Error Magnitude (m)', fontsize=fontsize_)
+    ax3.legend(loc="upper right", prop={'size': fontsize_})
+    ax3.set_title('3D Error Magnitude')
 
-def data_partition(args, sequence):
-    root_dir = Path('./aqua_data/')
-    
-    dataset = AquaSequenceDataset(root_dir, sequence, sequence_length=args.sequence_length, transform=args.transform)
-    
-    dataloader = DataLoader(
-        dataset,
-        batch_size=args.batch_size,
-        shuffle=False,
-        num_workers=args.workers,
-        pin_memory=True
-    )
-    
-    return dataloader
+    plt.tight_layout()
+    png_title = "{}_extended_analysis".format(seq)
+    plt.savefig(plot_path_dir + "/" + png_title + ".png", bbox_inches='tight', pad_inches=0.1)
+    plt.close()
 
-class Aqua_tester():
-    def __init__(self, args):
-        super(Aqua_tester, self).__init__()
-        
-        # generate data loader for each path
-        self.dataloader = []
-        for seq in args.val_seq:
-            self.dataloader.append(data_partition(args, seq))
+    # Additional plot: Cumulative error
+    plt.figure(figsize=(10, 5))
+    cumulative_error = np.cumsum(error_3d)
+    plt.plot(cumulative_error, label='Cumulative 3D Error')
+    plt.xlabel('Step', fontsize=fontsize_)
+    plt.ylabel('Cumulative 3D Error (m)', fontsize=fontsize_)
+    plt.title('Cumulative 3D Error Over Time')
+    plt.legend(loc="upper left", prop={'size': fontsize_})
+    png_title = "{}_cumulative_error".format(seq)
+    plt.savefig(plot_path_dir + "/" + png_title + ".png", bbox_inches='tight', pad_inches=0.1)
+    plt.close()
 
-        self.args = args
 
-    def test(self, net):
-        for seq, df in enumerate(self.dataloader):
-            pose_est = self.test_one_path(net, df)
-            # Process and save results for this sequence
-            # You'll need to implement this part based on your specific requirements
-
-    def test_one_path(self, net, df):
-        pose_list = []
-        for i, (image_seq, imu_seq, gt_seq) in enumerate(df):
-            x_in = image_seq.cuda()
-            i_in = imu_seq.cuda()
-            with torch.no_grad():
-                pose = net(x_in, i_in)
-            pose_list.append(pose.detach().cpu().numpy())
-        pose_est = np.concatenate(pose_list, axis=0)
-        return pose_est
-
-    # Add other methods as needed for evaluation
-
-def data_partition(args, sequence):
-    root_dir = Path('./aqua_data/')
-    
-    dataset = AquaSequenceDataset(root_dir, sequence, transform=args.transform)
-    
-    dataloader = DataLoader(
-        dataset,
-        batch_size=args.batch_size,
-        shuffle=False,
-        num_workers=args.workers,
-        pin_memory=True
-    )
-    
-    return dataloader
