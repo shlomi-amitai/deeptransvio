@@ -142,7 +142,7 @@ class AquaSequenceDataset(Dataset):
         self.root_dir = Path(root_dir)
         self.sequence = sequence
         self.transform = transform
-
+        
         self.image_dir = self.root_dir / 'sequences' / f'images_sequence_{sequence:01d}'
         self.imu_file = self.root_dir / 'imus' / f'imu_sequence_{sequence:01d}.csv'
         self.pose_file = self.root_dir / 'poses' / f'new_archaeo_colmap_traj_sequence_{sequence:02d}.txt'
@@ -179,26 +179,35 @@ class AquaSequenceDataset(Dataset):
         return len(self.images) - 1  # We need pairs of images
 
     def __getitem__(self, idx):
-        img1 = self.images[idx]
-        img2 = self.images[idx + 1]
+        img1_path = self.images[idx]
+        img2_path = self.images[idx + 1]
         
-        imu = self.imus[idx * 10:(idx + 1) * 10 + 1]  # Assuming 10Hz IMU data between frames
-        pose = self.poses_rel[idx]
+        img1 = Image.open(img1_path).convert('RGB')
+        img2 = Image.open(img2_path).convert('RGB')
         
         if self.transform:
             img1 = self.transform(img1)
             img2 = self.transform(img2)
         
-        return img1, img2, imu, pose
+        # Stack images to match the expected format
+        imgs = torch.stack([img1, img2], 0)
+        
+        imu = self.imus[idx * 10:(idx + 1) * 10 + 1]  # Assuming 10Hz IMU data between frames
+        imu = torch.from_numpy(imu).float()
+        
+        pose = self.poses_rel[idx]
+        pose = torch.from_numpy(pose).float()
+
+        return imgs, imu, pose
 
 def data_partition(args, sequence):
     root_dir = Path('./aqua_data/')
     
-    dataset = AquaSequenceDataset(root_dir, sequence, transform=None)  # You may want to add appropriate transforms
+    dataset = AquaSequenceDataset(root_dir, sequence, transform=args.transform)
     
     dataloader = DataLoader(
         dataset,
-        batch_size=8,
+        batch_size=args.batch_size,
         shuffle=False,
         num_workers=args.workers,
         pin_memory=True
