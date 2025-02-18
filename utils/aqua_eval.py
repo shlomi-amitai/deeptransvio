@@ -142,7 +142,7 @@ class AquaSequenceDataset(Dataset):
         self.root_dir = Path(root_dir)
         self.sequence = sequence
         self.transform = transform
-        
+
         self.image_dir = self.root_dir / 'sequences' / f'images_sequence_{sequence:01d}'
         self.imu_file = self.root_dir / 'imus' / f'imu_sequence_{sequence:01d}.csv'
         self.pose_file = self.root_dir / 'poses' / f'new_archaeo_colmap_traj_sequence_{sequence:02d}.txt'
@@ -198,7 +198,7 @@ def data_partition(args, sequence):
     
     dataloader = DataLoader(
         dataset,
-        batch_size=args.batch_size,
+        batch_size=8,
         shuffle=False,
         num_workers=args.workers,
         pin_memory=True

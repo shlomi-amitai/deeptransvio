@@ -168,11 +168,11 @@ def main():
     root_dir = Path('./data/')
     aqua_ds=True
     if aqua_ds:
-        train_seqs = [1]
+        args.train_seq = [1]
         root_dir = Path('./aqua_data/')
         train_dataset = Aqua(root_dir,
                             sequence_length=args.seq_len,
-                            train_seqs=train_seqs,
+                            train_seqs=args.train_seq,
                             transform=transform_train
                             )
     else:
@@ -204,6 +204,7 @@ def main():
     
     # Initialize the tester
     if aqua_ds:
+        args.val_seq=[1]
         tester = Aqua_tester(args)
     else:
         tester = KITTI_tester(args)
