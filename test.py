@@ -8,6 +8,7 @@ from dataset.KITTI_dataset import KITTI
 from model import DeepVIO
 from collections import defaultdict
 from utils.kitti_eval import KITTI_tester
+from utils.aqua_eval import Aqua_tester
 import numpy as np
 import math
 
@@ -64,7 +65,13 @@ def main():
         torch.cuda.set_device(gpu_ids[0])
     
     # Initialize the tester
-    tester = KITTI_tester(args)
+    aqua_ds = True
+    if aqua_ds:
+        args.data_dir = '/home/ws1/work/Shlomi/deeptransvio/aqua_data'
+        args.val_seq = [1]
+        tester = Aqua_tester(args)
+    else:
+        tester = KITTI_tester(args)
 
     # Model initialization
     model = DeepVIO(args)
@@ -85,7 +92,6 @@ def main():
     for i, seq in enumerate(args.val_seq):
         message = f"Seq: {seq}, t_rel: {tester.errors[i]['t_rel']:.4f}, r_rel: {tester.errors[i]['r_rel']:.4f}, "
         message += f"t_rmse: {tester.errors[i]['t_rmse']:.4f}, r_rmse: {tester.errors[i]['r_rmse']:.4f}, "
-        message += f"usage: {tester.errors[i]['usage']:.4f}"
         print(message)
     
     

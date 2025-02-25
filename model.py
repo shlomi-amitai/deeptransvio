@@ -24,6 +24,34 @@ def conv(batchNorm, in_planes, out_planes, kernel_size=3, stride=1, dropout=0):
             nn.Dropout(dropout)  # , inplace=True)
         )
 
+class PyramidalIMUEncoder(nn.Module):
+    def __init__(self, input_dim, hidden_dim, output_dim, levels=3):
+        super(PyramidalIMUEncoder, self).__init__()
+        self.levels = levels
+        self.convs = nn.ModuleList()
+        self.pools = nn.ModuleList()
+        
+        for i in range(levels):
+            self.convs.append(nn.Conv1d(input_dim if i == 0 else hidden_dim, hidden_dim, kernel_size=3, padding=1))
+            self.pools.append(nn.AvgPool1d(kernel_size=2, stride=2))
+        
+        self.global_conv = nn.Conv1d(hidden_dim * levels, output_dim, kernel_size=1)
+        
+    def forward(self, x):
+        # x: (batch_size * seq_len, 6, 11)
+        features = []
+        for i in range(self.levels):
+            x = F.relu(self.convs[i](x))
+            features.append(x)
+            x = self.pools[i](x)
+        
+        # Upsample and concatenate features
+        for i in range(1, self.levels):
+            features[i] = F.interpolate(features[i], size=features[0].shape[-1], mode='linear', align_corners=False)
+        
+        x = torch.cat(features, dim=1)
+        x = self.global_conv(x)
+        return x
 # The inertial encoder for raw imu data
 class Inertial_encoder(nn.Module):
     def __init__(self, opt):
@@ -44,28 +72,30 @@ class Inertial_encoder(nn.Module):
             nn.Dropout(opt.imu_dropout))
         self.proj = nn.Linear(256 * 1 * 11, opt.i_f_len)
 
+        # Add the PyramidalIMUEncoder
+        self.pyramidal_encoder = PyramidalIMUEncoder(input_dim=6, hidden_dim=64, output_dim=128, levels=3)
+
+        # Fusion layer to combine original and pyramidal features
+        self.fusion = nn.Linear(opt.i_f_len + 128 * 11, opt.i_f_len)
+
     def forward(self, x):
-        # x: (N, seq_len, 11, 6)
-        from utils.utils import visualize_imu_sequence, visualize_imu_sequence_current_processing
-        if 0:
-            self.debug_dir = "debug"
-            os.makedirs(self.debug_dir, exist_ok=True)
-            save_path = os.path.join(self.debug_dir, 'imu_sequence_visualization.png')
-            visualize_imu_sequence(x.detach().cpu().numpy(), save_path)
-            print(f"IMU sequence visualization saved to {save_path}")
-
-        if 0:  # Only visualize during training
-            self.debug_dir = "debug_current"
-            os.makedirs(self.debug_dir, exist_ok=True)
-            save_path = os.path.join(self.debug_dir, 'imu_sequence_visualization.png')
-            visualize_imu_sequence_current_processing(x.detach().cpu().numpy(), save_path)
-
+        # Original implementation
         batch_size = x.shape[0]
         seq_len = x.shape[1]
-        x = x.view(batch_size * seq_len, x.size(2), x.size(3))    # x: (N x seq_len, 11, 6)
-        x = self.encoder_conv(x.permute(0, 2, 1))                 # x: (N x seq_len, 64, 11)
-        out = self.proj(x.view(x.shape[0], -1))                   # out: (N x seq_len, 256)
-        return out.view(batch_size, seq_len, 256)
+        x_original = x.view(batch_size * seq_len, x.size(2), x.size(3))    # x: (N x seq_len, 11, 6)
+        x_original = self.encoder_conv(x_original.permute(0, 2, 1))        # x: (N x seq_len, 256, 11)
+        out_original = self.proj(x_original.view(x_original.shape[0], -1)) # out: (N x seq_len, 256)
+
+        # Pyramidal encoder
+        x_pyramidal = x.view(batch_size * seq_len, x.size(3), x.size(2))   # x: (N x seq_len, 6, 11)
+        out_pyramidal = self.pyramidal_encoder(x_pyramidal)                # out: (N x seq_len, 128, 11)
+        out_pyramidal = out_pyramidal.view(batch_size * seq_len, -1)       # out: (N x seq_len, 128 * 11)
+
+        # Fusion
+        fused = torch.cat([out_original, out_pyramidal], dim=1)
+        out = self.fusion(fused)
+
+        return out.view(batch_size, seq_len, -1)
 
 
 import torch
@@ -219,9 +249,9 @@ class Encoder(nn.Module):
         __tmp = self.encode_image(__tmp)
 
         self.visual_head = nn.Linear(int(np.prod(__tmp.size())), opt.v_f_len)
-        # self.inertial_encoder = Inertial_encoder(opt)
+        self.inertial_encoder = Inertial_encoder(opt)
         # self.inertial_encoder = Inertial_temporal_encoder(opt)
-        self.inertial_encoder = image_Inertial_Encoder(opt)
+        # self.inertial_encoder = image_Inertial_Encoder(opt)
         # self.inertial_encoder = CrossSequenceAttentionEncoder(opt)
 
     def forward(self, img, imu):
@@ -485,7 +515,7 @@ class DeepVIO(nn.Module):
 
         self.Feature_net = Encoder(opt)
         self.Pose_net = Pose_RNN(opt)
-        # self.Pose_net = HybridPoseNetwork(opt) # shlomia change
+        # /self.Pose_net = HybridPoseNetwork(opt) # shlomia change
         # self.Policy_net = PolicyNet(opt)
         self.opt = opt
         initialization(self)

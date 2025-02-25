@@ -5,9 +5,11 @@ import logging
 from path import Path
 from utils import custom_transform
 from dataset.KITTI_dataset import KITTI, KITTISmallDataset
+from dataset.Aqua_dataset import Aqua
 from model import DeepVIO
 from collections import defaultdict
 from utils.kitti_eval import KITTI_tester
+from utils.aqua_eval import Aqua_tester
 import numpy as np
 import math
 
@@ -18,7 +20,7 @@ import math
 
 
 parser = argparse.ArgumentParser(formatter_class=argparse.ArgumentDefaultsHelpFormatter)
-parser.add_argument('--data_dir', type=str, default='/home/shlomia/work/myrepo/Visual-Selective-VIO/data', help='path to the dataset')
+parser.add_argument('--data_dir', type=str, default='./aqua_data', help='path to the dataset')
 parser.add_argument('--gpu_ids', type=str, default='0', help='gpu ids: e.g. 0  0,1,2, 0,2. use -1 for CPU')
 parser.add_argument('--save_dir', type=str, default='./results', help='path to save the result')
 
@@ -46,7 +48,7 @@ parser.add_argument('--epochs_joint', type=int, default=40, help='number of epoc
 parser.add_argument('--epochs_fine', type=int, default=20, help='number of epochs for finetuning')
 parser.add_argument('--lr_warmup', type=float, default=5e-4, help='learning rate for warming up stage')
 parser.add_argument('--lr_joint', type=float, default=5e-5, help='learning rate for joint training stage')
-parser.add_argument('--lr_fine', type=float, default=1e-6, help='learning rate for finetuning stage')
+parser.add_argument('--lr_fine', type=float, default=1e-5, help='learning rate for finetuning stage')
 parser.add_argument('--eta', type=float, default=0.05, help='exponential decay factor for temperature')
 parser.add_argument('--temp_init', type=float, default=5, help='initial temperature for gumbel-softmax')
 parser.add_argument('--Lambda', type=float, default=3e-5, help='penalty factor for the visual encoder usage')
@@ -97,11 +99,12 @@ def train(model, optimizer, train_loader, selection, temp, logger, ep, p=0.5, we
 
         imgs = imgs.cuda().float()
         imus = imus.cuda().float()
-        gts = gts.cuda().float() 
+        gts = gts.cuda().float()
         weight = weight.cuda().float()
 
         optimizer.zero_grad()
-                
+        if imgs.size(2) < 3:
+            imgs = imgs.repeat(1, 1, 3, 1, 1)
         poses, _ = model(imgs, imus, is_first=True, hc=None, temp=temp, selection=selection, p=p)
         
         if not weighted:
@@ -162,11 +165,23 @@ def main():
         transform_train += [custom_transform.RandomColorAug()]
     transform_train = custom_transform.Compose(transform_train)
 
-    train_dataset = KITTI(args.data_dir,
-                        sequence_length=args.seq_len,
-                        train_seqs=args.train_seq,
-                        transform=transform_train
-                        )
+    root_dir = Path('./data/')
+    aqua_ds=True
+    if aqua_ds:
+        args.train_seq = [1]
+        root_dir = Path('./aqua_data/')
+        train_dataset = Aqua(root_dir,
+                            sequence_length=args.seq_len,
+                            train_seqs=args.train_seq,
+                            transform=transform_train
+                            )
+    else:
+        train_dataset = KITTI(root_dir,
+                            sequence_length=args.seq_len,
+                            train_seqs=args.train_seq,
+                            transform=transform_train
+                            )
+
     logger.info('train_dataset: ' + str(train_dataset))
     
     train_loader = torch.utils.data.DataLoader(
@@ -188,7 +203,11 @@ def main():
         torch.cuda.set_device(gpu_ids[0])
     
     # Initialize the tester
-    tester = KITTI_tester(args)
+    if aqua_ds:
+        args.val_seq=[1]
+        tester = Aqua_tester(args)
+    else:
+        tester = KITTI_tester(args)
 
     # Model initialization
     model = DeepVIO(args)
@@ -255,13 +274,12 @@ def main():
             r_rel = np.mean([errors[i]['r_rel'] for i in range(len(errors))])
             t_rmse = np.mean([errors[i]['t_rmse'] for i in range(len(errors))])
             r_rmse = np.mean([errors[i]['r_rmse'] for i in range(len(errors))])
-            usage = np.mean([errors[i]['usage'] for i in range(len(errors))])
 
             if t_rel < best:
                 best = t_rel 
                 torch.save(model.module.state_dict(), f'{checkpoints_dir}/best_{best:.2f}.pth')
         
-            message = f'Epoch {ep} evaluation finished , t_rel: {t_rel:.4f}, r_rel: {r_rel:.4f}, t_rmse: {t_rmse:.4f}, r_rmse: {r_rmse:.4f}, usage: {usage:.4f}, best t_rel: {best:.4f}'
+            message = f'Epoch {ep} evaluation finished , t_rel: {t_rel:.4f}, r_rel: {r_rel:.4f}, t_rmse: {t_rmse:.4f}, r_rmse: {r_rmse:.4f}, best t_rel: {best:.4f}'
             logger.info(message)
             print(message)
     
