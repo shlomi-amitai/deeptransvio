@@ -67,6 +67,7 @@ def main():
     # Initialize the tester
     aqua_ds = True
     if aqua_ds:
+        args.data_dir = '/home/ws1/work/Shlomi/deeptransvio/aqua_data'
         args.val_seq = [1]
         tester = Aqua_tester(args)
     else:

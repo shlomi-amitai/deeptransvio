@@ -13,6 +13,7 @@ from tqdm import tqdm
 import pandas as pd
 from scipy.spatial.transform import Rotation, Slerp
 from scipy.interpolate import interp1d
+from utils.utils import rotationError, get_relative_pose_6DoF
 
 class data_partition():
     def __init__(self, opt, folder):
@@ -28,13 +29,11 @@ class data_partition():
         imu_dir = self.data_dir + '/imus/'
         pose_dir = self.data_dir + '/poses/'
 
-        self.img_paths = glob.glob('{}/images_sequence_{}*.png'.format(image_dir, self.folder))
-        imu_file = imu_dir / 'imu_sequence_{}.csv'.format(self.folder)
+        self.img_paths = glob.glob('{}/images_sequence_{}/*.png'.format(image_dir, self.folder))
+        imu_file = imu_dir +  'imu_sequence_{}.csv'.format(self.folder)
         self.imus = pd.read_csv(imu_file, header=None)
         self.imus = self.imus.iloc[1:, 1:].astype(float).values
-        self.poses, self.poses_rel = read_pose_from_text('{}{}.txt'.format(pose_dir, self.folder))
-
-        pose_file = pose_dir / 'new_archaeo_colmap_traj_sequence_{}.txt'.format(self.folder)
+        pose_file = pose_dir + 'new_archaeo_colmap_traj_sequence_0{}.txt'.format(self.folder)
         with open(pose_file, 'r') as f:
             poses_raw = [line.strip().split() for line in f]
 
@@ -90,24 +89,26 @@ class data_partition():
         poses = interpolated_poses
 
         # Calculate relative poses
-        poses_rel = [np.eye(4)]  # First relative pose is identity
+        self.poses_rel = [np.eye(4)]  # First relative pose is identity
         for i in range(1, len(poses)):
-            poses_rel.append(np.linalg.inv(poses[i - 1]) @ poses[i])
+            self.poses_rel.append(np.linalg.inv(poses[i - 1]) @ poses[i])
 
 
         self.img_paths.sort()
 
         self.img_paths_list, self.poses_list, self.imus_list = [], [], []
         start = 0
-        n_frames = len(self.img_paths)
+        n_frames = min(len(self.img_paths), len(self.imus)//(self.seq_len-1))
+        self.poses_rel = np.array([get_relative_pose_6DoF(np.eye(4), pose_mat) for pose_mat in
+                           self.poses_rel])
         while start + self.seq_len < n_frames:
             self.img_paths_list.append(self.img_paths[start:start + self.seq_len])
-            self.poses_list.append(self.poses_rel[start:start + self.seq_len - 1])
+            self.poses_list.append(np.array(self.poses_rel[start:start + self.seq_len - 1]))
             self.imus_list.append(self.imus[start * 10:(start + self.seq_len - 1) * 10 + 1])
             start += self.seq_len - 1
-        self.img_paths_list.append(self.img_paths[start:])
-        self.poses_list.append(self.poses_rel[start:])
-        self.imus_list.append(self.imus[start * 10:])
+        # self.img_paths_list.append(self.img_paths[start:])
+        # self.poses_list.append(self.poses_rel[start:])
+        # self.imus_list.append(self.imus[start * 10:])
 
     def __len__(self):
         return len(self.img_paths_list)
@@ -127,9 +128,9 @@ class data_partition():
         return image_sequence, imu_sequence, gt_sequence
 
 
-class KITTI_tester():
+class Aqua_tester():
     def __init__(self, args):
-        super(KITTI_tester, self).__init__()
+        super(Aqua_tester, self).__init__()
 
         # generate data loader for each path
         self.dataloader = []
@@ -148,6 +149,8 @@ class KITTI_tester():
         hc = None
         pose_list, decision_list, probs_list = [], [], []
         for i, (image_seq, imu_seq, gt_seq) in tqdm(enumerate(df), total=len(df), smoothing=0.9):
+            if image_seq.size(1) < 3:
+                image_seq = image_seq.repeat(1, 3, 1, 1)
             x_in = image_seq.unsqueeze(0).repeat(num_gpu, 1, 1, 1, 1).cuda()
             i_in = imu_seq.unsqueeze(0).repeat(num_gpu, 1, 1).cuda()
             with torch.no_grad():
@@ -188,6 +191,9 @@ class KITTI_tester():
 
 def kitti_eval(pose_est, pose_gt):
     # Calculate the translational and rotational RMSE
+    min_size = min(pose_est.shape[0], pose_gt.shape[0])
+    pose_gt = pose_gt[:min_size,:]
+    pose_est = pose_est[:min_size,:]
     t_rmse, r_rmse = rmse_err_cal(pose_est, pose_gt)
 
     # Transfer to 3x4 pose matrix
@@ -215,7 +221,7 @@ def kitti_err_cal(pose_est_mat, pose_gt_mat):
     for first_frame in range(0, len(pose_gt_mat), step_size):
 
         for i in range(num_lengths):
-            len_ = lengths[i]
+            len_ = lengths[i] // 50
             last_frame = lastFrameFromSegmentLength(dist, first_frame, len_)
             # Continue if sequence not long enough
             if last_frame == -1 or last_frame >= len(pose_est_mat) or first_frame >= len(pose_est_mat):
