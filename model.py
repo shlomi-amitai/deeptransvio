@@ -38,7 +38,7 @@ class PyramidalIMUEncoder(nn.Module):
         self.global_conv = nn.Conv1d(hidden_dim * levels, output_dim, kernel_size=1)
         
     def forward(self, x):
-        # x: (batch_size * seq_len, 6, 11)
+        # x: (batch_size, seq_len * 11, 6)
         features = []
         for i in range(self.levels):
             x = F.relu(self.convs[i](x))
@@ -51,8 +51,9 @@ class PyramidalIMUEncoder(nn.Module):
         
         x = torch.cat(features, dim=1)
         x = self.global_conv(x)
-        return x
-# The inertial encoder for raw imu data
+        
+        return x  # (batch_size, output_dim, seq_len * 11)
+
 class Inertial_encoder(nn.Module):
     def __init__(self, opt):
         super(Inertial_encoder, self).__init__()
@@ -73,29 +74,35 @@ class Inertial_encoder(nn.Module):
         self.proj = nn.Linear(256 * 1 * 11, opt.i_f_len)
 
         # Add the PyramidalIMUEncoder
-        self.pyramidal_encoder = PyramidalIMUEncoder(input_dim=6, hidden_dim=64, output_dim=128, levels=3)
+        self.pyramidal_encoder = PyramidalIMUEncoder(input_dim=6, hidden_dim=64, output_dim=128)
 
         # Fusion layer to combine original and pyramidal features
-        self.fusion = nn.Linear(opt.i_f_len + 128 * 11, opt.i_f_len)
+        self.fusion = nn.Linear(opt.i_f_len + 128, opt.i_f_len)
 
     def forward(self, x):
+        # x: (batch_size, seq_len, 11, 6)
+        batch_size, seq_len, time_steps, sensors = x.shape
+        
         # Original implementation
-        batch_size = x.shape[0]
-        seq_len = x.shape[1]
-        x_original = x.view(batch_size * seq_len, x.size(2), x.size(3))    # x: (N x seq_len, 11, 6)
-        x_original = self.encoder_conv(x_original.permute(0, 2, 1))        # x: (N x seq_len, 256, 11)
-        out_original = self.proj(x_original.view(x_original.shape[0], -1)) # out: (N x seq_len, 256)
+        x_original = x.reshape(batch_size * seq_len, time_steps, sensors)
+        x_original = x_original.permute(0, 2, 1)  # (batch_size * seq_len, 6, 11)
+        x_original = self.encoder_conv(x_original)
+        out_original = self.proj(x_original.reshape(x_original.shape[0], -1))  # (batch_size * seq_len, i_f_len)
 
         # Pyramidal encoder
-        x_pyramidal = x.view(batch_size * seq_len, x.size(3), x.size(2))   # x: (N x seq_len, 6, 11)
-        out_pyramidal = self.pyramidal_encoder(x_pyramidal)                # out: (N x seq_len, 128, 11)
-        out_pyramidal = out_pyramidal.view(batch_size * seq_len, -1)       # out: (N x seq_len, 128 * 11)
+        x_pyramidal = x.reshape(batch_size, seq_len * time_steps, sensors)  # (batch_size, seq_len * 11, 6)
+        x_pyramidal = x_pyramidal.permute(0, 2, 1)  # (batch_size, 6, seq_len * 11)
+        out_pyramidal = self.pyramidal_encoder(x_pyramidal)  # (batch_size, 128, seq_len * 11)
+        out_pyramidal = out_pyramidal.permute(0, 2, 1)  # (batch_size, seq_len * 11, 128)
+        out_pyramidal = out_pyramidal.reshape(batch_size, seq_len, time_steps, -1)  # (batch_size, seq_len, 11, 128)
+        out_pyramidal = out_pyramidal.mean(dim=2)  # (batch_size, seq_len, 128)
+        out_pyramidal = out_pyramidal.reshape(batch_size * seq_len, -1)  # (batch_size * seq_len, 128)
 
         # Fusion
         fused = torch.cat([out_original, out_pyramidal], dim=1)
         out = self.fusion(fused)
 
-        return out.view(batch_size, seq_len, -1)
+        return out.reshape(batch_size, seq_len, -1)
 
 
 import torch
