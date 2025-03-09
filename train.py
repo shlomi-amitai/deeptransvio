@@ -6,10 +6,13 @@ from path import Path
 from utils import custom_transform
 from dataset.KITTI_dataset import KITTI, KITTISmallDataset
 from dataset.Aqua_dataset import Aqua
+from dataset.NTNU_dataset import NTNU
+
 from model import DeepVIO
 from collections import defaultdict
 from utils.kitti_eval import KITTI_tester
 from utils.aqua_eval import Aqua_tester
+from utils.ntnu_eval import NTNU_tester
 import numpy as np
 import math
 
@@ -20,7 +23,8 @@ import math
 
 
 parser = argparse.ArgumentParser(formatter_class=argparse.ArgumentDefaultsHelpFormatter)
-parser.add_argument('--data_dir', type=str, default='./aqua_data', help='path to the dataset')
+parser.add_argument('--data_dir', type=str, default='./NTNU_data', help='path to the dataset')
+parser.add_argument('--dataset', type=str, default='NTNU', choices=['KITTI', 'Aqua', 'NTNU'], help='dataset to use')
 parser.add_argument('--gpu_ids', type=str, default='0', help='gpu ids: e.g. 0  0,1,2, 0,2. use -1 for CPU')
 parser.add_argument('--save_dir', type=str, default='./results', help='path to save the result')
 
@@ -165,9 +169,10 @@ def main():
         transform_train += [custom_transform.RandomColorAug()]
     transform_train = custom_transform.Compose(transform_train)
 
+    
     root_dir = Path('./data/')
-    aqua_ds=True
-    if aqua_ds:
+    
+    if args.dataset == 'Aqua':
         args.train_seq = [1]
         root_dir = Path('./aqua_data/')
         train_dataset = Aqua(root_dir,
@@ -175,13 +180,22 @@ def main():
                             train_seqs=args.train_seq,
                             transform=transform_train
                             )
-    else:
+    elif args.dataset == 'NTNU':
+        args.train_seq = [6]  # Adjust this as needed for NTNU dataset
+        root_dir = Path('./NTNU_data/')
+        train_dataset = NTNU(root_dir,
+                                     sequence_length=args.seq_len,
+                                     train_seqs=args.train_seq,
+                                     transform=transform_train
+                                     )
+    else:  # KITTI dataset (default)
         train_dataset = KITTI(root_dir,
                             sequence_length=args.seq_len,
                             train_seqs=args.train_seq,
                             transform=transform_train
                             )
-
+    
+    logger.info(f'Using {args.dataset} dataset')
     logger.info('train_dataset: ' + str(train_dataset))
     
     train_loader = torch.utils.data.DataLoader(
@@ -203,9 +217,12 @@ def main():
         torch.cuda.set_device(gpu_ids[0])
     
     # Initialize the tester
-    if aqua_ds:
-        args.val_seq=[1]
+    if args.dataset == 'Aqua':
+        args.val_seq = [1]
         tester = Aqua_tester(args)
+    elif args.dataset == 'NTNU':
+        args.val_seq = [6]  # Adjust this as needed for NTNU dataset
+        tester = NTNU_tester(args)  # You'll need to implement this tester class
     else:
         tester = KITTI_tester(args)
 

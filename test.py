@@ -9,7 +9,9 @@ from model import DeepVIO
 from collections import defaultdict
 from utils.kitti_eval import KITTI_tester
 from utils.aqua_eval import Aqua_tester
+from utils.ntnu_eval import NTNU_tester
 import numpy as np
+import math
 import math
 
 parser = argparse.ArgumentParser(formatter_class=argparse.ArgumentDefaultsHelpFormatter)
@@ -37,6 +39,7 @@ parser.add_argument('--workers', type=int, default=4, help='number of workers')
 parser.add_argument('--experiment_name', type=str, default='test', help='experiment name')
 parser.add_argument('--model', type=str, default='./pretrain_models/vf_512_if_256_3e-05.model', help='path to the pretrained model')
 parser.add_argument('--selection_choise', type=str, default='gumbel-softmax', help='path to the pretrained model')
+parser.add_argument('--dataset', type=str, default='KITTI', choices=['KITTI', 'Aqua', 'NTNU'], help='dataset to use')
 
 args = parser.parse_args()
 
@@ -65,12 +68,15 @@ def main():
         torch.cuda.set_device(gpu_ids[0])
     
     # Initialize the tester
-    aqua_ds = True
-    if aqua_ds:
+    if args.dataset == 'Aqua':
         args.data_dir = '/home/ws1/work/Shlomi/deeptransvio/aqua_data'
         args.val_seq = [1]
         tester = Aqua_tester(args)
-    else:
+    elif args.dataset == 'NTNU':
+        args.data_dir = '/home/ws1/work/Shlomi/deeptransvio/NTNU_data'
+        args.val_seq = [6]  # Adjust this as needed for NTNU dataset
+        tester = NTNU_tester(args)
+    else:  # Default to KITTI
         tester = KITTI_tester(args)
 
     # Model initialization
