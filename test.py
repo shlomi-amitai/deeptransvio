@@ -39,7 +39,7 @@ parser.add_argument('--workers', type=int, default=4, help='number of workers')
 parser.add_argument('--experiment_name', type=str, default='test', help='experiment name')
 parser.add_argument('--model', type=str, default='./pretrain_models/vf_512_if_256_3e-05.model', help='path to the pretrained model')
 parser.add_argument('--selection_choise', type=str, default='gumbel-softmax', help='path to the pretrained model')
-parser.add_argument('--dataset', type=str, default='KITTI', choices=['KITTI', 'Aqua', 'NTNU'], help='dataset to use')
+parser.add_argument('--dataset', type=str, default='NTNU', choices=['KITTI', 'Aqua', 'NTNU'], help='dataset to use')
 
 args = parser.parse_args()
 
@@ -73,8 +73,8 @@ def main():
         args.val_seq = [1]
         tester = Aqua_tester(args)
     elif args.dataset == 'NTNU':
-        args.data_dir = '/home/ws1/work/Shlomi/deeptransvio/NTNU_data'
-        args.val_seq = [6]  # Adjust this as needed for NTNU dataset
+        args.data_dir = '/home/ws1/work/Shlomi/deeptransvio/NTNU_rec_data'
+        args.val_seq = [0]  # Adjust this as needed for NTNU dataset
         tester = NTNU_tester(args)
     else:  # Default to KITTI
         tester = KITTI_tester(args)

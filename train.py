@@ -23,7 +23,7 @@ import math
 
 
 parser = argparse.ArgumentParser(formatter_class=argparse.ArgumentDefaultsHelpFormatter)
-parser.add_argument('--data_dir', type=str, default='./NTNU_data', help='path to the dataset')
+parser.add_argument('--data_dir', type=str, default='./NTNU_rec_data', help='path to the dataset')
 parser.add_argument('--dataset', type=str, default='NTNU', choices=['KITTI', 'Aqua', 'NTNU'], help='dataset to use')
 parser.add_argument('--gpu_ids', type=str, default='0', help='gpu ids: e.g. 0  0,1,2, 0,2. use -1 for CPU')
 parser.add_argument('--save_dir', type=str, default='./results', help='path to save the result')
@@ -181,8 +181,8 @@ def main():
                             transform=transform_train
                             )
     elif args.dataset == 'NTNU':
-        args.train_seq = [6]  # Adjust this as needed for NTNU dataset
-        root_dir = Path('./NTNU_data/')
+        args.train_seq = [0]  # Adjust this as needed for NTNU dataset
+        root_dir = Path('./NTNU_rec_data/')
         train_dataset = NTNU(root_dir,
                                      sequence_length=args.seq_len,
                                      train_seqs=args.train_seq,
@@ -221,7 +221,7 @@ def main():
         args.val_seq = [1]
         tester = Aqua_tester(args)
     elif args.dataset == 'NTNU':
-        args.val_seq = [6]  # Adjust this as needed for NTNU dataset
+        args.val_seq = [0]  # Adjust this as needed for NTNU dataset
         tester = NTNU_tester(args)  # You'll need to implement this tester class
     else:
         tester = KITTI_tester(args)

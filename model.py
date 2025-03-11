@@ -265,7 +265,7 @@ class Encoder(nn.Module):
         v = torch.cat((img[:, :-1], img[:, 1:]), dim=2)
         batch_size = v.size(0)
         seq_len = v.size(1)
-
+    
         # image CNN
         v = v.view(batch_size * seq_len, v.size(2), v.size(3), v.size(4))
         v = self.encode_image(v)
@@ -273,8 +273,21 @@ class Encoder(nn.Module):
         v = self.visual_head(v)  # (batch, seq_len, 256)
         
         # IMU CNN
-        imu = torch.cat([imu[:, i * 10:i * 10 + 11, :].unsqueeze(1) for i in range(seq_len)], dim=1)
-        imu = self.inertial_encoder(imu) # 10 X sequences with seq_len =11
+        # Modify this part to handle variable-length IMU data
+        imu_seq = []
+        for i in range(seq_len):
+            start = i * 10
+            end = start + 11
+            if end <= imu.size(1):
+                imu_seq.append(imu[:, start:end, :].unsqueeze(1))
+            else:
+                # If we don't have enough IMU data, pad with zeros
+                pad_size = end - imu.size(1)
+                padded_imu = F.pad(imu[:, start:, :], (0, 0, 0, pad_size))
+                imu_seq.append(padded_imu.unsqueeze(1))
+        
+        imu = torch.cat(imu_seq, dim=1)
+        imu = self.inertial_encoder(imu)
         return v, imu
 
     def encode_image(self, x):
