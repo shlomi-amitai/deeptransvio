@@ -32,7 +32,7 @@ class NTNU(Dataset):
         sequence_set = []
         
         # Read all poses
-        all_poses, all_poses_rel = read_pose_from_text(self.root/'poses/qualisys_ariel_odom_traj_3_id1.kitti')
+        all_poses, all_poses_rel = read_pose_from_text(self.root/'poses/qualisys_ariel_odom_traj_3_id1_synced.kitti')
         
         pose_start = 0
         for seq in self.train_seqs:

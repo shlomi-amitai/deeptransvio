@@ -73,7 +73,7 @@ def main():
         args.val_seq = [1]
         tester = Aqua_tester(args)
     elif args.dataset == 'NTNU':
-        args.data_dir = '/home/ws1/work/Shlomi/deeptransvio/NTNU_rec_data'
+        args.data_dir = '/home/ws1/work/Shlomi/deeptransvio/NTNU_data/'
         args.val_seq = [0]  # Adjust this as needed for NTNU dataset
         tester = NTNU_tester(args)
     else:  # Default to KITTI

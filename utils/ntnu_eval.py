@@ -9,7 +9,8 @@ import torchvision.transforms.functional as TF
 import matplotlib.pyplot as plt
 import math
 from utils.utils import *
-from tqdm import tqdm 
+from tqdm import tqdm
+import re
 
 class data_partition():
     def __init__(self, opt, folder):
@@ -27,12 +28,22 @@ class data_partition():
         pose_dir = self.data_dir + '/poses/'
     
         # Read all poses
-        all_poses, all_poses_rel = read_pose_from_text(f'{pose_dir}qualisys_ariel_odom_traj_3_id1.kitti')
-    
+        all_poses, all_poses_rel = read_pose_from_text(f'{pose_dir}qualisys_ariel_odom_traj_3_id1_synced.kitti')
+
+        def extract_timestamp(filename):
+            match = re.search(r'frame_\d+_frame_(\d+)', filename)
+            if not match:
+                raise ValueError(f"Unexpected filename format: {filename}")
+            return int(match.group(1))
+
         # Count images in each folder and determine pose segments
         pose_start = 0
         for seq in range(1):  # 0 to 6
             img_paths = glob.glob(f'{image_dir}cam0_{seq}/*.png')
+            try:
+                img_paths.sort(key=extract_timestamp)
+            except ValueError as e:
+                print(f"Error sorting images: {e}")
             img_count = len(img_paths)
             
             if seq == self.folder:
@@ -285,8 +296,8 @@ def plotPath_2D_and_3D(seq, poses_gt_mat, poses_est_mat, plot_path_dir, speed, w
     # Plot 2D trajectory estimation map
     fig = plt.figure(figsize=(6, 6), dpi=100)
     ax = plt.gca()
-    plt.plot(x_gt, z_gt, style_gt, label=plot_keys[0])
-    plt.plot(x_pred, z_pred, style_pred, label=plot_keys[1])
+    plt.plot(x_gt, y_gt, style_gt, label=plot_keys[0])
+    plt.plot(x_pred, y_pred, style_pred, label=plot_keys[1])
     plt.plot(start_point[0], start_point[1], style_O, label='Start Point')
     plt.legend(loc="upper right", prop={'size': fontsize_})
     plt.xlabel('x (m)', fontsize=fontsize_)

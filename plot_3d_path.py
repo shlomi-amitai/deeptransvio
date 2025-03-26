@@ -35,7 +35,7 @@ def plot_3d_path(positions):
     plt.show()
 
 if __name__ == "__main__":
-    file_path = "/home/ws1/work/Shlomi/deeptransvio/NTNU_data/poses/qualisys_ariel_odom_traj_3_id1.kitti"
+    file_path = "/home/ws1/work/Shlomi/deeptransvio/data/poses/00.txt"
     poses = read_poses(file_path)
     positions = extract_positions(poses)
     plot_3d_path(positions)
