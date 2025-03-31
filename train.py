@@ -24,7 +24,7 @@ import math
 
 parser = argparse.ArgumentParser(formatter_class=argparse.ArgumentDefaultsHelpFormatter)
 parser.add_argument('--data_dir', type=str, default='./data', help='path to the dataset')
-parser.add_argument('--dataset', type=str, default='NTNU', choices=['KITTI', 'Aqua', 'NTNU'], help='dataset to use')
+parser.add_argument('--dataset', type=str, default='KITTI', choices=['KITTI', 'Aqua', 'NTNU'], help='dataset to use')
 parser.add_argument('--gpu_ids', type=str, default='0', help='gpu ids: e.g. 0  0,1,2, 0,2. use -1 for CPU')
 parser.add_argument('--save_dir', type=str, default='./results', help='path to save the result')
 
@@ -181,7 +181,7 @@ def main():
                             transform=transform_train
                             )
     elif args.dataset == 'NTNU':
-        args.train_seq = [0]  # Adjust this as needed for NTNU dataset
+        args.train_seq = [0,1,2,3,4,5]  # Adjust this as needed for NTNU dataset
         root_dir = Path('./NTNU_data/')
         args.data_dir = 'NTNU_data/'
         train_dataset = NTNU(root_dir,
