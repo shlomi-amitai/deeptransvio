@@ -6,13 +6,11 @@ from path import Path
 from utils import custom_transform
 from dataset.KITTI_dataset import KITTI, KITTISmallDataset
 from dataset.Aqua_dataset import Aqua
-from dataset.NTNU_dataset import NTNU
 
 from model import DeepVIO
 from collections import defaultdict
 from utils.kitti_eval import KITTI_tester
 from utils.aqua_eval import Aqua_tester
-from utils.ntnu_eval import NTNU_tester
 import numpy as np
 import math
 
@@ -23,8 +21,8 @@ import math
 
 
 parser = argparse.ArgumentParser(formatter_class=argparse.ArgumentDefaultsHelpFormatter)
-parser.add_argument('--data_dir', type=str, default='./NTNU_data', help='path to the dataset')
-parser.add_argument('--dataset', type=str, default='NTNU', choices=['KITTI', 'Aqua', 'NTNU'], help='dataset to use')
+parser.add_argument('--data_dir', type=str, default='./data', help='path to the dataset')
+parser.add_argument('--dataset', type=str, default='KITTI', choices=['KITTI', 'Aqua', 'NTNU'], help='dataset to use')
 parser.add_argument('--gpu_ids', type=str, default='0', help='gpu ids: e.g. 0  0,1,2, 0,2. use -1 for CPU')
 parser.add_argument('--save_dir', type=str, default='./results', help='path to save the result')
 
@@ -109,7 +107,7 @@ def train(model, optimizer, train_loader, selection, temp, logger, ep, p=0.5, we
         optimizer.zero_grad()
         if imgs.size(2) < 3:
             imgs = imgs.repeat(1, 1, 3, 1, 1)
-        poses, _ = model(imgs, imus, is_first=True, hc=None, temp=temp, selection=selection, p=p)
+        poses, _ , contrastive_loss = model(imgs, imus, is_first=True, hc=None, temp=temp, selection=selection, p=p)
         
         if not weighted:
             angle_loss = torch.nn.functional.mse_loss(poses[:,:,:3], gts[:, :, :3])
@@ -119,7 +117,7 @@ def train(model, optimizer, train_loader, selection, temp, logger, ep, p=0.5, we
             angle_loss = (weight.unsqueeze(-1).unsqueeze(-1) * (poses[:,:,:3] - gts[:, :, :3]) ** 2).mean()
             translation_loss = (weight.unsqueeze(-1).unsqueeze(-1) * (poses[:,:,3:] - gts[:, :, 3:]) ** 2).mean()
         
-        pose_loss = 100 * angle_loss + translation_loss        
+        pose_loss = 100 * angle_loss + translation_loss + contrastive_loss
 
         loss = pose_loss
         

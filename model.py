@@ -289,6 +289,11 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+
+
 class Fusion_module(nn.Module):
     def __init__(self, opt):
         super(Fusion_module, self).__init__()
@@ -296,7 +301,7 @@ class Fusion_module(nn.Module):
         self.i_f_len = opt.i_f_len
         self.v_f_len = opt.v_f_len
         self.f_len = self.i_f_len + self.v_f_len
-        
+
         if self.fuse_method == 'soft':
             self.net = nn.Sequential(
                 nn.Linear(self.f_len, self.f_len))
@@ -314,6 +319,8 @@ class Fusion_module(nn.Module):
                 nn.ReLU(),
                 nn.Linear(self.f_len, self.f_len)
             )
+            self.contrastive_proj = nn.Linear(self.f_len, 128)
+            self.temperature = 0.07
 
     def forward(self, v, i):
         if self.fuse_method == 'cat':
@@ -330,23 +337,38 @@ class Fusion_module(nn.Module):
             return feat_cat * mask[:, :, :, 0]
         elif self.fuse_method == 'enhanced':
             feat_cat = torch.cat((v, i), -1)
-            
+
             # Apply self-attention
             attn_out, _ = self.attention(feat_cat.transpose(0, 1), feat_cat.transpose(0, 1), feat_cat.transpose(0, 1))
             attn_out = attn_out.transpose(0, 1)
-            
+
             # Compute gating weights
             gate_weights = self.gate(torch.cat((feat_cat, attn_out), dim=-1))
-            
+
             # Apply gating
             gated_features = feat_cat * gate_weights + attn_out * (1 - gate_weights)
-            
+
             # Final fusion
             fused = self.fusion_net(torch.cat((gated_features, feat_cat), dim=-1))
-            
-            return fused
 
+            # Contrastive learning
+            z_v = self.contrastive_proj(v)
+            z_i = self.contrastive_proj(i)
 
+            return fused, z_v, z_i
+
+    def contrastive_loss(self, z_v, z_i):
+        batch_size = z_v.shape[0]
+        z_v = F.normalize(z_v, dim=1)
+        z_i = F.normalize(z_i, dim=1)
+
+        logits = torch.matmul(z_v, z_i.T) / self.temperature
+        labels = torch.arange(batch_size, device=z_v.device)
+
+        loss_v = F.cross_entropy(logits, labels)
+        loss_i = F.cross_entropy(logits.T, labels)
+
+        return (loss_v + loss_i) / 2
 # The policy network module
 class PolicyNet(nn.Module):
     def __init__(self, opt):
@@ -392,25 +414,18 @@ class Pose_RNN(nn.Module):
     def forward(self, fv, fv_alter, fi, prev=None):
         if prev is not None:
             prev = (prev[0].transpose(1, 0).contiguous(), prev[1].transpose(1, 0).contiguous())
-        
-        # Select between fv and fv_alter
-        # v_in = fv * dec[:, :, :1] + fv_alter * dec[:, :, -1:] if fv_alter is not None else fv
-        fused = self.fuse(fv, fi)
-        
+
+        fused, z_v, z_i = self.fuse(fv, fi)
+
         out, hc = self.rnn(fused) if prev is None else self.rnn(fused, prev)
         out = self.rnn_drop_out(out)
         pose = self.regressor(out)
 
         hc = (hc[0].transpose(1, 0).contiguous(), hc[1].transpose(1, 0).contiguous())
-        return pose, hc
+        return pose, hc, z_v, z_i
 
-
-
-# shlomia alternative pose transformer
-import torch
-import torch.nn as nn
-import math
-
+    def compute_contrastive_loss(self, z_v, z_i):
+        return self.fuse.contrastive_loss(z_v, z_i)
 
 class HybridPoseNetwork(nn.Module):
     def __init__(self, opt):
@@ -522,34 +537,37 @@ class DeepVIO(nn.Module):
 
         self.Feature_net = Encoder(opt)
         self.Pose_net = Pose_RNN(opt)
-        # /self.Pose_net = HybridPoseNetwork(opt) # shlomia change
-        # self.Policy_net = PolicyNet(opt)
         self.opt = opt
         initialization(self)
 
     def forward(self, img, imu, is_first=True, hc=None, temp=5, selection='gumbel-softmax', p=0.5):
-
         fv, fi = self.Feature_net(img, imu)
         batch_size = fv.shape[0]
         seq_len = fv.shape[1]
 
-        poses, decisions, logits= [], [], []
-        hidden = torch.zeros(batch_size, self.opt.rnn_hidden_size).to(fv.device) if hc is None else hc[0].contiguous()[:, -1, :]
-        fv_alter = torch.zeros_like(fv) # zero padding in the paper, can be replaced by other 
-        
+        poses, z_vs, z_is = [], [], []
+        hidden = torch.zeros(batch_size, self.opt.rnn_hidden_size).to(fv.device) if hc is None else hc[0].contiguous()[
+                                                                                                    :, -1, :]
+        fv_alter = torch.zeros_like(fv)  # zero padding in the paper, can be replaced by other
+
         for i in range(seq_len):
             if i == 0 and is_first:
-                # The first relative pose is estimated by both images and imu by default
-                pose, hc = self.Pose_net(fv[:, i:i+1, :], None, fi[:, i:i+1, :], hc)
+                pose, hc, z_v, z_i = self.Pose_net(fv[:, i:i + 1, :], None, fi[:, i:i + 1, :], hc)
             else:
-                pose, hc = self.Pose_net(fv[:, i:i + 1, :], fv_alter[:, i:i + 1, :], fi[:, i:i + 1, :], hc)
+                pose, hc, z_v, z_i = self.Pose_net(fv[:, i:i + 1, :], fv_alter[:, i:i + 1, :], fi[:, i:i + 1, :], hc)
             poses.append(pose)
+            z_vs.append(z_v)
+            z_is.append(z_i)
             hidden = hc[0].contiguous()[:, -1, :]
 
         poses = torch.cat(poses, dim=1)
+        z_vs = torch.cat(z_vs, dim=1)
+        z_is = torch.cat(z_is, dim=1)
 
-        return poses, hc
+        contrastive_loss = self.Pose_net.compute_contrastive_loss(z_vs.view(-1, z_vs.size(-1)),
+                                                                  z_is.view(-1, z_is.size(-1)))
 
+        return poses, hc, contrastive_loss
 
 def initialization(net):
     #Initilization
