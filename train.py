@@ -6,13 +6,11 @@ from path import Path
 from utils import custom_transform
 from dataset.KITTI_dataset import KITTI, KITTISmallDataset
 from dataset.Aqua_dataset import Aqua
-from dataset.NTNU_dataset import NTNU
 
 from model import DeepVIO
 from collections import defaultdict
 from utils.kitti_eval import KITTI_tester
 from utils.aqua_eval import Aqua_tester
-from utils.ntnu_eval import NTNU_tester
 import numpy as np
 import math
 
@@ -23,8 +21,8 @@ import math
 
 
 parser = argparse.ArgumentParser(formatter_class=argparse.ArgumentDefaultsHelpFormatter)
-parser.add_argument('--data_dir', type=str, default='./NTNU_data', help='path to the dataset')
-parser.add_argument('--dataset', type=str, default='NTNU', choices=['KITTI', 'Aqua', 'NTNU'], help='dataset to use')
+parser.add_argument('--data_dir', type=str, default='./data', help='path to the dataset')
+parser.add_argument('--dataset', type=str, default='KITTI', choices=['KITTI', 'Aqua', 'NTNU'], help='dataset to use')
 parser.add_argument('--gpu_ids', type=str, default='0', help='gpu ids: e.g. 0  0,1,2, 0,2. use -1 for CPU')
 parser.add_argument('--save_dir', type=str, default='./results', help='path to save the result')
 
@@ -181,7 +179,7 @@ def main():
                             transform=transform_train
                             )
     elif args.dataset == 'NTNU':
-        args.train_seq = [6]  # Adjust this as needed for NTNU dataset
+        args.train_seq = [0]  # Adjust this as needed for NTNU dataset
         root_dir = Path('./NTNU_data/')
         train_dataset = NTNU(root_dir,
                                      sequence_length=args.seq_len,
