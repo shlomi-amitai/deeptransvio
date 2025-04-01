@@ -320,8 +320,9 @@ class Fusion_module(nn.Module):
                 nn.Linear(self.f_len, self.f_len)
             )
         
-        # Add this for all fusion methods
-        self.contrastive_proj = nn.Linear(self.f_len, 128)
+        # Modify the contrastive projection layers
+        self.contrastive_proj_v = nn.Linear(self.v_f_len, 128)
+        self.contrastive_proj_i = nn.Linear(self.i_f_len, 128)
         self.temperature = 0.07
 
     def forward(self, v, i):
@@ -352,40 +353,24 @@ class Fusion_module(nn.Module):
             fused = self.fusion_net(torch.cat((gated_features, feat_cat), dim=-1))
 
         # Contrastive learning projections for all fusion methods
-        z_v = self.contrastive_proj(v)
-        z_i = self.contrastive_proj(i)
+        z_v = self.contrastive_proj_v(v)
+        z_i = self.contrastive_proj_i(i)
 
         return fused, z_v, z_i
 
     def contrastive_loss(self, z_v, z_i):
         batch_size = z_v.shape[0]
-        z_v = F.normalize(z_v, dim=1)
-        z_i = F.normalize(z_i, dim=1)
+        z_v = F.normalize(z_v, dim=-1)
+        z_i = F.normalize(z_i, dim=-1)
 
-        logits = torch.matmul(z_v, z_i.T) / self.temperature
+        logits = torch.matmul(z_v, z_i.transpose(-2, -1)) / self.temperature
         labels = torch.arange(batch_size, device=z_v.device)
 
         loss_v = F.cross_entropy(logits, labels)
-        loss_i = F.cross_entropy(logits.T, labels)
+        loss_i = F.cross_entropy(logits.transpose(-2, -1), labels)
 
         return (loss_v + loss_i) / 2
-class PolicyNet(nn.Module):
-    def __init__(self, opt):
-        super(PolicyNet, self).__init__()
-        in_dim = opt.rnn_hidden_size + opt.i_f_len
-        self.net = nn.Sequential(
-            nn.Linear(in_dim, 256),
-            nn.LeakyReLU(0.1, inplace=True),
-            nn.BatchNorm1d(256),
-            nn.Linear(256, 32),
-            nn.LeakyReLU(0.1, inplace=True),
-            nn.BatchNorm1d(32),
-            nn.Linear(32, 2))
 
-    def forward(self, x, temp):
-        logits = self.net(x)
-        hard_mask = F.gumbel_softmax(logits, tau=temp, hard=True, dim=-1)
-        return logits, hard_mask
 
 # The pose estimation network
 class Pose_RNN(nn.Module):
