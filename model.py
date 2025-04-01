@@ -319,25 +319,25 @@ class Fusion_module(nn.Module):
                 nn.ReLU(),
                 nn.Linear(self.f_len, self.f_len)
             )
-            self.contrastive_proj = nn.Linear(self.f_len, 128)
-            self.temperature = 0.07
+        
+        # Add this for all fusion methods
+        self.contrastive_proj = nn.Linear(self.f_len, 128)
+        self.temperature = 0.07
 
     def forward(self, v, i):
+        feat_cat = torch.cat((v, i), -1)
+        
         if self.fuse_method == 'cat':
-            return torch.cat((v, i), -1)
+            fused = feat_cat
         elif self.fuse_method == 'soft':
-            feat_cat = torch.cat((v, i), -1)
             weights = self.net(feat_cat)
-            return feat_cat * weights
+            fused = feat_cat * weights
         elif self.fuse_method == 'hard':
-            feat_cat = torch.cat((v, i), -1)
             weights = self.net(feat_cat)
             weights = weights.view(v.shape[0], v.shape[1], self.f_len, 2)
             mask = F.gumbel_softmax(weights, tau=1, hard=True, dim=-1)
-            return feat_cat * mask[:, :, :, 0]
+            fused = feat_cat * mask[:, :, :, 0]
         elif self.fuse_method == 'enhanced':
-            feat_cat = torch.cat((v, i), -1)
-
             # Apply self-attention
             attn_out, _ = self.attention(feat_cat.transpose(0, 1), feat_cat.transpose(0, 1), feat_cat.transpose(0, 1))
             attn_out = attn_out.transpose(0, 1)
@@ -351,11 +351,11 @@ class Fusion_module(nn.Module):
             # Final fusion
             fused = self.fusion_net(torch.cat((gated_features, feat_cat), dim=-1))
 
-            # Contrastive learning
-            z_v = self.contrastive_proj(v)
-            z_i = self.contrastive_proj(i)
+        # Contrastive learning projections for all fusion methods
+        z_v = self.contrastive_proj(v)
+        z_i = self.contrastive_proj(i)
 
-            return fused, z_v, z_i
+        return fused, z_v, z_i
 
     def contrastive_loss(self, z_v, z_i):
         batch_size = z_v.shape[0]
@@ -369,7 +369,6 @@ class Fusion_module(nn.Module):
         loss_i = F.cross_entropy(logits.T, labels)
 
         return (loss_v + loss_i) / 2
-# The policy network module
 class PolicyNet(nn.Module):
     def __init__(self, opt):
         super(PolicyNet, self).__init__()
