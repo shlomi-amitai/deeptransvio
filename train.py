@@ -117,7 +117,7 @@ def train(model, optimizer, train_loader, selection, temp, logger, ep, p=0.5, we
             angle_loss = (weight.unsqueeze(-1).unsqueeze(-1) * (poses[:,:,:3] - gts[:, :, :3]) ** 2).mean()
             translation_loss = (weight.unsqueeze(-1).unsqueeze(-1) * (poses[:,:,3:] - gts[:, :, 3:]) ** 2).mean()
         
-        pose_loss = 100 * angle_loss + translation_loss + contrastive_loss
+        pose_loss = 100 * angle_loss + translation_loss + 0.1*contrastive_loss
 
         loss = pose_loss
         
