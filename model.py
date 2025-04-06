@@ -110,6 +110,11 @@ class Fusion_module(nn.Module):
             self.net = nn.Sequential(
                 nn.Linear(self.f_len, 2 * self.f_len))
 
+        # Modify the contrastive projection layers
+        self.contrastive_proj_v = nn.Linear(self.v_f_len, 128)
+        self.contrastive_proj_i = nn.Linear(self.i_f_len, 128)
+        self.temperature = 0.07
+
     def forward(self, v, i):
         feat_cat = torch.cat((v, i), -1)
 
