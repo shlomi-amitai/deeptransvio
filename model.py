@@ -111,19 +111,39 @@ class Fusion_module(nn.Module):
                 nn.Linear(self.f_len, 2 * self.f_len))
 
     def forward(self, v, i):
+        feat_cat = torch.cat((v, i), -1)
+
         if self.fuse_method == 'cat':
-            return torch.cat((v, i), -1)
+            fused = feat_cat
         elif self.fuse_method == 'soft':
             feat_cat = torch.cat((v, i), -1)
             weights = self.net(feat_cat)
-            return feat_cat * weights
+            fused = feat_cat * weights
         elif self.fuse_method == 'hard':
             feat_cat = torch.cat((v, i), -1)
             weights = self.net(feat_cat)
             weights = weights.view(v.shape[0], v.shape[1], self.f_len, 2)
             mask = F.gumbel_softmax(weights, tau=1, hard=True, dim=-1)
-            return feat_cat * mask[:, :, :, 0]
+            fused = feat_cat * mask[:, :, :, 0]
 
+        # Contrastive learning projections for all fusion methods
+        z_v = self.contrastive_proj_v(v)
+        z_i = self.contrastive_proj_i(i)
+
+        return fused, z_v, z_i
+
+    def contrastive_loss(self, z_v, z_i):
+        batch_size = z_v.shape[0]
+        z_v = F.normalize(z_v, dim=-1)
+        z_i = F.normalize(z_i, dim=-1)
+
+        logits = torch.matmul(z_v, z_i.transpose(-2, -1)) / self.temperature
+        labels = torch.arange(batch_size, device=z_v.device)
+
+        loss_v = F.cross_entropy(logits, labels)
+        loss_i = F.cross_entropy(logits.transpose(-2, -1), labels)
+
+        return (loss_v + loss_i) / 2
 # The policy network module
 class PolicyNet(nn.Module):
     def __init__(self, opt):
@@ -172,14 +192,17 @@ class Pose_RNN(nn.Module):
         
         # Select between fv and fv_alter
         v_in = fv * dec[:, :, :1] + fv_alter * dec[:, :, -1:] if fv_alter is not None else fv
-        fused = self.fuse(v_in, fi)
+        fused, z_v, z_i = self.fuse(v_in, fi)
         
         out, hc = self.rnn(fused) if prev is None else self.rnn(fused, prev)
         out = self.rnn_drop_out(out)
         pose = self.regressor(out)
 
         hc = (hc[0].transpose(1, 0).contiguous(), hc[1].transpose(1, 0).contiguous())
-        return pose, hc
+        return pose, hc, z_v, z_i
+
+    def compute_contrastive_loss(self, z_v, z_i):
+        return self.fuse.contrastive_loss(z_v, z_i)
 
 
 
@@ -200,14 +223,14 @@ class DeepVIO(nn.Module):
         batch_size = fv.shape[0]
         seq_len = fv.shape[1]
 
-        poses, decisions, logits= [], [], []
+        poses, decisions, logits, z_vs, z_is = [], [], [], [], []
         hidden = torch.zeros(batch_size, self.opt.rnn_hidden_size).to(fv.device) if hc is None else hc[0].contiguous()[:, -1, :]
         fv_alter = torch.zeros_like(fv) # zero padding in the paper, can be replaced by other 
         
         for i in range(seq_len):
             if i == 0 and is_first:
                 # The first relative pose is estimated by both images and imu by default
-                pose, hc = self.Pose_net(fv[:, i:i+1, :], None, fi[:, i:i+1, :], None, hc)
+                pose, hc, z_v, z_i = self.Pose_net(fv[:, i:i+1, :], None, fi[:, i:i+1, :], None, hc)
             else:
                 if selection == 'gumbel-softmax':
                     # Otherwise, sample the decision from the policy network
@@ -215,7 +238,7 @@ class DeepVIO(nn.Module):
                     logit, decision = self.Policy_net(p_in.detach(), temp)
                     decision = decision.unsqueeze(1)
                     logit = logit.unsqueeze(1)
-                    pose, hc = self.Pose_net(fv[:, i:i+1, :], fv_alter[:, i:i+1, :], fi[:, i:i+1, :], decision, hc)
+                    pose, hc, z_v, z_i = self.Pose_net(fv[:, i:i+1, :], fv_alter[:, i:i+1, :], fi[:, i:i+1, :], decision, hc)
                     decisions.append(decision)
                     logits.append(logit)
                 elif selection == 'random':
@@ -223,18 +246,25 @@ class DeepVIO(nn.Module):
                     decision[:,:,1] = 1-decision[:,:,0]
                     decision = decision.to(fv.device)
                     logit = 0.5*torch.ones((fv.shape[0], 1, 2)).to(fv.device)
-                    pose, hc = self.Pose_net(fv[:, i:i+1, :], fv_alter[:, i:i+1, :], fi[:, i:i+1, :], decision, hc)
+                    pose, hc, z_v, z_i = self.Pose_net(fv[:, i:i+1, :], fv_alter[:, i:i+1, :], fi[:, i:i+1, :], decision, hc)
                     decisions.append(decision)
                     logits.append(logit)
             poses.append(pose)
+            z_vs.append(z_v)
+            z_is.append(z_i)
             hidden = hc[0].contiguous()[:, -1, :]
 
         poses = torch.cat(poses, dim=1)
+        z_vs = torch.cat(z_vs, dim=1)
+        z_is = torch.cat(z_is, dim=1)
         decisions = torch.cat(decisions, dim=1)
         logits = torch.cat(logits, dim=1)
         probs = torch.nn.functional.softmax(logits, dim=-1)
 
-        return poses, decisions, probs, hc
+        contrastive_loss = self.Pose_net.compute_contrastive_loss(z_vs.view(-1, z_vs.size(-1)),
+                                                                  z_is.view(-1, z_is.size(-1)))
+
+        return poses, decisions, probs, hc, contrastive_loss
 
 
 def initialization(net):
