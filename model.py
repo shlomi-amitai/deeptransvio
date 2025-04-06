@@ -102,7 +102,10 @@ class Fusion_module(nn.Module):
     def __init__(self, opt):
         super(Fusion_module, self).__init__()
         self.fuse_method = opt.fuse_method
-        self.f_len = opt.i_f_len + opt.v_f_len
+        self.i_f_len = opt.i_f_len
+        self.v_f_len = opt.v_f_len
+        self.f_len = self.i_f_len + self.v_f_len
+
         if self.fuse_method == 'soft':
             self.net = nn.Sequential(
                 nn.Linear(self.f_len, self.f_len))
