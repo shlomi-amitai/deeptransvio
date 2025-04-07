@@ -12,7 +12,7 @@ import numpy as np
 import math
 
 parser = argparse.ArgumentParser(formatter_class=argparse.ArgumentDefaultsHelpFormatter)
-parser.add_argument('--data_dir', type=str, default='/nfs/turbo/coe-hunseok/mingyuy/KITTI_odometry', help='path to the dataset')
+parser.add_argument('--data_dir', type=str, default='./data', help='path to the dataset')
 parser.add_argument('--gpu_ids', type=str, default='0', help='gpu ids: e.g. 0  0,1,2, 0,2. use -1 for CPU')
 parser.add_argument('--save_dir', type=str, default='./results', help='path to save the result')
 
@@ -32,7 +32,7 @@ parser.add_argument('--rnn_dropout_out', type=float, default=0.2, help='dropout 
 parser.add_argument('--rnn_dropout_between', type=float, default=0.2, help='dropout within LSTM')
 
 parser.add_argument('--weight_decay', type=float, default=5e-6, help='weight decay for the optimizer')
-parser.add_argument('--batch_size', type=int, default=16, help='batch size')
+parser.add_argument('--batch_size', type=int, default=12, help='batch size')
 parser.add_argument('--seq_len', type=int, default=11, help='sequence length for LSTM')
 parser.add_argument('--workers', type=int, default=4, help='number of workers')
 parser.add_argument('--epochs_warmup', type=int, default=40, help='number of epochs for warmup')
