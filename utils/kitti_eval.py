@@ -8,6 +8,18 @@ from PIL import Image
 import torchvision.transforms.functional as TF
 import matplotlib.pyplot as plt
 import math
+def extract_ahrs_from_poses(poses):
+    # Extract rotation matrices from poses
+    rotation_matrices = poses[:, :9].reshape(-1, 3, 3)
+    
+    # Convert rotation matrices to Euler angles (roll, pitch, yaw)
+    euler_angles = np.array([Rotation.from_matrix(R).as_euler('xyz', degrees=True) for R in rotation_matrices])
+    
+    # Add some noise to simulate real AHRS data (optional)
+    noise = np.random.normal(0, 1, euler_angles.shape)  # 1 degree standard deviation
+    noisy_euler_angles = euler_angles + noise
+    
+    return noisy_euler_angles
 from utils.utils import *
 from tqdm import tqdm 
 
@@ -24,23 +36,28 @@ class data_partition():
         image_dir = self.data_dir + '/sequences/'
         imu_dir = self.data_dir + '/imus/'
         pose_dir = self.data_dir + '/poses/'
-
+    
         self.img_paths = glob.glob('{}{}/image_2/*.png'.format(image_dir, self.folder))
         self.imus = sio.loadmat('{}{}.mat'.format(imu_dir, self.folder))['imu_data_interp']
         self.poses, self.poses_rel = read_pose_from_text('{}{}.txt'.format(pose_dir, self.folder))
         self.img_paths.sort()
-
-        self.img_paths_list, self.poses_list, self.imus_list = [], [], []
+    
+        # Extract AHRS data from poses
+        self.ahrs_data = extract_ahrs_from_poses(self.poses)
+    
+        self.img_paths_list, self.poses_list, self.imus_list, self.ahrs_list = [], [], [], []
         start = 0
         n_frames = len(self.img_paths)
         while start + self.seq_len < n_frames:
             self.img_paths_list.append(self.img_paths[start:start + self.seq_len])
             self.poses_list.append(self.poses_rel[start:start + self.seq_len - 1])
             self.imus_list.append(self.imus[start * 10:(start + self.seq_len - 1) * 10 + 1])
+            self.ahrs_list.append(self.ahrs_data[start:start + self.seq_len])
             start += self.seq_len - 1
         self.img_paths_list.append(self.img_paths[start:])
         self.poses_list.append(self.poses_rel[start:])
         self.imus_list.append(self.imus[start * 10:])
+        self.ahrs_list.append(self.ahrs_data[start:])
 
     def __len__(self):
         return len(self.img_paths_list)
@@ -56,8 +73,9 @@ class data_partition():
             image_sequence.append(img_as_tensor)
         image_sequence = torch.cat(image_sequence, 0)
         imu_sequence = torch.FloatTensor(self.imus_list[i])
+        ahrs_sequence = torch.FloatTensor(self.ahrs_list[i])
         gt_sequence = self.poses_list[i][:, :6]
-        return image_sequence, imu_sequence, gt_sequence
+        return image_sequence, imu_sequence, ahrs_sequence, gt_sequence
 
 
 class KITTI_tester():
@@ -74,11 +92,12 @@ class KITTI_tester():
     def test_one_path(self, net, df, selection, num_gpu=1, p=0.5):
         hc = None
         pose_list, decision_list, probs_list= [], [], []
-        for i, (image_seq, imu_seq, gt_seq) in tqdm(enumerate(df), total=len(df), smoothing=0.9):  
+        for i, (image_seq, imu_seq, ahrs_seq, gt_seq) in tqdm(enumerate(df), total=len(df), smoothing=0.9):  
             x_in = image_seq.unsqueeze(0).repeat(num_gpu,1,1,1,1).cuda()
             i_in = imu_seq.unsqueeze(0).repeat(num_gpu,1,1).cuda()
+            a_in = ahrs_seq.unsqueeze(0).repeat(num_gpu,1,1).cuda()
             with torch.no_grad():
-                pose, decision, probs, hc = net(x_in, i_in, is_first=(i==0), hc=hc, selection=selection, p=p)
+                pose, decision, probs, hc = net(x_in, i_in, a_in, is_first=(i==0), hc=hc, selection=selection, p=p)
             pose_list.append(pose[0,:,:].detach().cpu().numpy())
             decision_list.append(decision[0,:,:].detach().cpu().numpy()[:, 0])
             probs_list.append(probs[0,:,:].detach().cpu().numpy())
