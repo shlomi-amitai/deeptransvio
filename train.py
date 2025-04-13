@@ -98,7 +98,7 @@ def train(model, optimizer, train_loader, selection, temp, logger, ep, p=0.5, we
 
         optimizer.zero_grad()
                 
-        poses, decisions, probs, _ = model(imgs, imus, ahrs, is_first=True, hc=None, temp=temp, selection=selection, p=p)
+        poses, decisions, probs, _ = model(imgs, imus, ahrs, True, None, temp, selection, 0.5)
         
         if not weighted:
             angle_loss = torch.nn.functional.mse_loss(poses[:,:,:3], gts[:, :, :3])

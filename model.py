@@ -199,13 +199,12 @@ class DeepVIO(nn.Module):
         
         initialization(self)
 
-    def forward(self, img, imu, is_first=True, hc=None, temp=5, selection='gumbel-softmax', p=0.5):
-
-        fv, fi = self.Feature_net(img, imu)
+    def forward(self, img, imu, ahrs, is_first, hc, temp, selection, p):
+        fv, fi = self.Feature_net(img, imu, ahrs)
         batch_size = fv.shape[0]
         seq_len = fv.shape[1]
 
-        poses, decisions, logits= [], [], []
+        poses, decisions, logits = [], [], []
         hidden = torch.zeros(batch_size, self.opt.rnn_hidden_size).to(fv.device) if hc is None else hc[0].contiguous()[:, -1, :]
         fv_alter = torch.zeros_like(fv) # zero padding in the paper, can be replaced by other 
         
@@ -235,9 +234,9 @@ class DeepVIO(nn.Module):
             hidden = hc[0].contiguous()[:, -1, :]
 
         poses = torch.cat(poses, dim=1)
-        decisions = torch.cat(decisions, dim=1)
-        logits = torch.cat(logits, dim=1)
-        probs = torch.nn.functional.softmax(logits, dim=-1)
+        decisions = torch.cat(decisions, dim=1) if decisions else None
+        logits = torch.cat(logits, dim=1) if logits else None
+        probs = torch.nn.functional.softmax(logits, dim=-1) if logits is not None else None
 
         return poses, decisions, probs, hc
 
