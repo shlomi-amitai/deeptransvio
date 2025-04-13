@@ -8,18 +8,23 @@ from PIL import Image
 import torchvision.transforms.functional as TF
 import matplotlib.pyplot as plt
 import math
+from scipy.spatial.transform import Rotation
+import argparse
+
 def extract_ahrs_from_poses(poses):
-    # Extract rotation matrices from poses
-    rotation_matrices = poses[:, :9].reshape(-1, 3, 3)
+    # poses is already in the shape (n, 4, 4)
+    # Extract the rotation matrix (3x3) from each pose
+    rotation_matrices = poses[:, :3, :3]
     
     # Convert rotation matrices to Euler angles (roll, pitch, yaw)
-    euler_angles = np.array([Rotation.from_matrix(R).as_euler('xyz', degrees=True) for R in rotation_matrices])
+    euler_angles = Rotation.from_matrix(rotation_matrices).as_euler('xyz', degrees=True)
     
     # Add some noise to simulate real AHRS data (optional)
-    noise = np.random.normal(0, 1, euler_angles.shape)  # 1 degree standard deviation
+    noise = np.random.normal(0, 0.1, euler_angles.shape)
     noisy_euler_angles = euler_angles + noise
     
     return noisy_euler_angles
+
 from utils.utils import *
 from tqdm import tqdm 
 

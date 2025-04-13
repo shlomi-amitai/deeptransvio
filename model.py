@@ -28,7 +28,7 @@ class Inertial_encoder(nn.Module):
         super(Inertial_encoder, self).__init__()
 
         self.encoder_conv = nn.Sequential(
-            nn.Conv1d(6, 64, kernel_size=3, padding=1),
+            nn.Conv1d(9, 64, kernel_size=3, padding=1),  # Changed input channels from 6 to 9
             nn.BatchNorm1d(64),
             nn.LeakyReLU(0.1, inplace=True),
             nn.Dropout(opt.imu_dropout),
@@ -42,12 +42,16 @@ class Inertial_encoder(nn.Module):
             nn.Dropout(opt.imu_dropout))
         self.proj = nn.Linear(256 * 1 * 11, opt.i_f_len)
 
-    def forward(self, x):
+    def forward(self, x, ahrs):
         # x: (N, seq_len, 11, 6)
+        # ahrs: (N, seq_len, 3)
         batch_size = x.shape[0]
         seq_len = x.shape[1]
         x = x.view(batch_size * seq_len, x.size(2), x.size(3))    # x: (N x seq_len, 11, 6)
-        x = self.encoder_conv(x.permute(0, 2, 1))                 # x: (N x seq_len, 64, 11)
+        ahrs = ahrs.unsqueeze(2).expand(-1, -1, 11, -1)  # ahrs: (N, seq_len, 11, 3)
+        ahrs = ahrs.reshape(batch_size * seq_len, 11, 3)  # ahrs: (N x seq_len, 11, 3)
+        x = torch.cat([x, ahrs], dim=2)  # x: (N x seq_len, 11, 9)
+        x = self.encoder_conv(x.permute(0, 2, 1))                 # x: (N x seq_len, 256, 11)
         out = self.proj(x.view(x.shape[0], -1))                   # out: (N x seq_len, 256)
         return out.view(batch_size, seq_len, 256)
 
@@ -71,14 +75,6 @@ class Encoder(nn.Module):
 
         self.visual_head = nn.Linear(int(np.prod(__tmp.size())), opt.v_f_len)
         self.inertial_encoder = Inertial_encoder(opt)
-        
-        self.ahrs_encoder = nn.Sequential(
-            nn.Linear(3, 32),
-            nn.LeakyReLU(0.1, inplace=True),
-            nn.Linear(32, 64),
-            nn.LeakyReLU(0.1, inplace=True),
-            nn.Linear(64, opt.a_f_len)
-        )
 
     def forward(self, img, imu, ahrs):
         v = torch.cat((img[:, :-1], img[:, 1:]), dim=2)
@@ -91,14 +87,11 @@ class Encoder(nn.Module):
         v = v.view(batch_size, seq_len, -1)  # (batch, seq_len, fv)
         v = self.visual_head(v)  # (batch, seq_len, 256)
         
-        # IMU CNN
+        # IMU CNN (now including AHRS)
         imu = torch.cat([imu[:, i * 10:i * 10 + 11, :].unsqueeze(1) for i in range(seq_len)], dim=1)
-        imu = self.inertial_encoder(imu)
+        imu = self.inertial_encoder(imu, ahrs)
         
-        # Process AHRS data
-        a = self.ahrs_encoder(ahrs)
-        
-        return v, imu, a
+        return v, imu
 
     def encode_image(self, x):
         out_conv2 = self.conv2(self.conv1(x))
@@ -109,31 +102,32 @@ class Encoder(nn.Module):
         return out_conv6
 
 
+# The fusion module
 class Fusion_module(nn.Module):
     def __init__(self, opt):
         super(Fusion_module, self).__init__()
         self.fuse_method = opt.fuse_method
-        self.f_len = opt.i_f_len + opt.v_f_len + opt.a_f_len
+        self.f_len = opt.i_f_len + opt.v_f_len
         if self.fuse_method == 'soft':
             self.net = nn.Sequential(
                 nn.Linear(self.f_len, self.f_len))
         elif self.fuse_method == 'hard':
             self.net = nn.Sequential(
-                nn.Linear(self.f_len, 3 * self.f_len))
+                nn.Linear(self.f_len, 2 * self.f_len))
 
-    def forward(self, v, i, a):
+    def forward(self, v, i):
         if self.fuse_method == 'cat':
-            return torch.cat((v, i, a), -1)
+            return torch.cat((v, i), -1)
         elif self.fuse_method == 'soft':
-            feat_cat = torch.cat((v, i, a), -1)
+            feat_cat = torch.cat((v, i), -1)
             weights = self.net(feat_cat)
             return feat_cat * weights
         elif self.fuse_method == 'hard':
-            feat_cat = torch.cat((v, i, a), -1)
+            feat_cat = torch.cat((v, i), -1)
             weights = self.net(feat_cat)
-            weights = weights.view(v.shape[0], v.shape[1], self.f_len, 3)
+            weights = weights.view(v.shape[0], v.shape[1], self.f_len, 2)
             mask = F.gumbel_softmax(weights, tau=1, hard=True, dim=-1)
-            return feat_cat * (mask[:, :, :, 0] + mask[:, :, :, 1] + mask[:, :, :, 2])
+            return feat_cat * mask[:, :, :, 0]
 
 # The policy network module
 class PolicyNet(nn.Module):
@@ -160,7 +154,7 @@ class Pose_RNN(nn.Module):
         super(Pose_RNN, self).__init__()
 
         # The main RNN network
-        f_len = opt.v_f_len + opt.i_f_len + opt.a_f_len
+        f_len = opt.v_f_len + opt.i_f_len
         self.rnn = nn.LSTM(
             input_size=f_len,
             hidden_size=opt.rnn_hidden_size,
@@ -177,13 +171,13 @@ class Pose_RNN(nn.Module):
             nn.LeakyReLU(0.1, inplace=True),
             nn.Linear(128, 6))
 
-    def forward(self, fv, fv_alter, fi, fa, dec, prev=None):
+    def forward(self, fv, fv_alter, fi, dec, prev=None):
         if prev is not None:
             prev = (prev[0].transpose(1, 0).contiguous(), prev[1].transpose(1, 0).contiguous())
         
         # Select between fv and fv_alter
         v_in = fv * dec[:, :, :1] + fv_alter * dec[:, :, -1:] if fv_alter is not None else fv
-        fused = self.fuse(v_in, fi, fa)
+        fused = self.fuse(v_in, fi)
         
         out, hc = self.rnn(fused) if prev is None else self.rnn(fused, prev)
         out = self.rnn_drop_out(out)
@@ -205,9 +199,9 @@ class DeepVIO(nn.Module):
         
         initialization(self)
 
-    def forward(self, img, imu, ahrs, is_first=True, hc=None, temp=5, selection='gumbel-softmax', p=0.5):
+    def forward(self, img, imu, is_first=True, hc=None, temp=5, selection='gumbel-softmax', p=0.5):
 
-        fv, fi, fa = self.Feature_net(img, imu, ahrs)
+        fv, fi = self.Feature_net(img, imu)
         batch_size = fv.shape[0]
         seq_len = fv.shape[1]
 
@@ -218,7 +212,7 @@ class DeepVIO(nn.Module):
         for i in range(seq_len):
             if i == 0 and is_first:
                 # The first relative pose is estimated by both images and imu by default
-                pose, hc = self.Pose_net(fv[:, i:i+1, :], None, fi[:, i:i+1, :], fa[:, i:i+1, :], None, hc)
+                pose, hc = self.Pose_net(fv[:, i:i+1, :], None, fi[:, i:i+1, :], None, hc)
             else:
                 if selection == 'gumbel-softmax':
                     # Otherwise, sample the decision from the policy network
@@ -226,7 +220,7 @@ class DeepVIO(nn.Module):
                     logit, decision = self.Policy_net(p_in.detach(), temp)
                     decision = decision.unsqueeze(1)
                     logit = logit.unsqueeze(1)
-                    pose, hc = self.Pose_net(fv[:, i:i+1, :], fv_alter[:, i:i+1, :], fi[:, i:i+1, :], fa[:, i:i+1, :], decision, hc)
+                    pose, hc = self.Pose_net(fv[:, i:i+1, :], fv_alter[:, i:i+1, :], fi[:, i:i+1, :], decision, hc)
                     decisions.append(decision)
                     logits.append(logit)
                 elif selection == 'random':
@@ -234,7 +228,7 @@ class DeepVIO(nn.Module):
                     decision[:,:,1] = 1-decision[:,:,0]
                     decision = decision.to(fv.device)
                     logit = 0.5*torch.ones((fv.shape[0], 1, 2)).to(fv.device)
-                    pose, hc = self.Pose_net(fv[:, i:i+1, :], fv_alter[:, i:i+1, :], fi[:, i:i+1, :], fa[:, i:i+1, :], decision, hc)
+                    pose, hc = self.Pose_net(fv[:, i:i+1, :], fv_alter[:, i:i+1, :], fi[:, i:i+1, :], decision, hc)
                     decisions.append(decision)
                     logits.append(logit)
             poses.append(pose)

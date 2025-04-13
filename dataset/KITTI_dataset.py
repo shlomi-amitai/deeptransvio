@@ -13,6 +13,7 @@ from collections import Counter
 from scipy.ndimage import gaussian_filter1d
 from scipy.signal.windows import triang
 from scipy.ndimage import convolve1d
+from scipy.spatial.transform import Rotation
 
 IMU_FREQ = 10
 
@@ -32,15 +33,27 @@ class KITTI(Dataset):
         sequence_set = []
         for folder in self.train_seqs:
             poses, poses_rel = read_pose_from_text(self.root/'poses/{}.txt'.format(folder))
+            print(f"Shape of poses array for folder {folder}: {poses.shape}")
             imus = sio.loadmat(self.root/'imus/{}.mat'.format(folder))['imu_data_interp']
-            fpaths = sorted((self.root/'sequences/{}/image_2'.format(folder)).files("*.png"))      
+            fpaths = sorted((self.root/'sequences/{}/image_2'.format(folder)).files("*.png"))
+            
+            # Extract AHRS data from poses
+            ahrs_data = extract_ahrs_from_poses(poses)
+            
             for i in range(len(fpaths)-self.sequence_length):
                 img_samples = fpaths[i:i+self.sequence_length]
                 imu_samples = imus[i*IMU_FREQ:(i+self.sequence_length-1)*IMU_FREQ+1]
                 pose_samples = poses[i:i+self.sequence_length]
                 pose_rel_samples = poses_rel[i:i+self.sequence_length-1]
+                ahrs_samples = ahrs_data[i:i+self.sequence_length]
                 segment_rot = rotationError(pose_samples[0], pose_samples[-1])
-                sample = {'imgs':img_samples, 'imus':imu_samples, 'gts': pose_rel_samples, 'rot': segment_rot}
+                sample = {
+                    'imgs': img_samples, 
+                    'imus': imu_samples, 
+                    'gts': pose_rel_samples, 
+                    'ahrs': ahrs_samples,
+                    'rot': segment_rot
+                }
                 sequence_set.append(sample)
         self.samples = sequence_set
         
@@ -60,18 +73,21 @@ class KITTI(Dataset):
 
     def __getitem__(self, index):
         sample = self.samples[index]
-        imgs = [np.asarray(Image.open(img)) for img in sample['imgs']]
-        
-        if self.transform is not None:
+        imgs = [Image.open(img) for img in sample['imgs']]
+        if self.transform:
             imgs, imus, gts = self.transform(imgs, np.copy(sample['imus']), np.copy(sample['gts']))
         else:
             imus = np.copy(sample['imus'])
-            gts = np.copy(sample['gts']).astype(np.float32)
+            gts = np.copy(sample['gts'])
         
-        rot = sample['rot'].astype(np.float32)
-        weight = self.weights[index]
-
-        return imgs, imus, gts, rot, weight
+        ahrs = np.copy(sample['ahrs'])  # Add this line to handle AHRS data
+        
+        # Calculate the weight
+        weight = np.linalg.norm(gts[:, :3], axis=1)
+        weight[weight < 0.01] = 0.01
+        weight = weight / weight.sum()
+        
+        return imgs, imus, gts, ahrs, weight
 
     def __len__(self):
         return len(self.samples)
@@ -103,5 +119,42 @@ def get_lds_kernel_window(kernel, ks, sigma):
 
     return kernel_window
 
+def extract_ahrs_from_poses(poses):
+    # poses is already in the shape (n, 4, 4)
+    # Extract the rotation matrix (3x3) from each pose
+    rotation_matrices = poses[:, :3, :3]
+    
+    # Convert rotation matrices to Euler angles (roll, pitch, yaw)
+    euler_angles = Rotation.from_matrix(rotation_matrices).as_euler('xyz', degrees=True)
+    
+    # Add some noise to simulate real AHRS data (optional)
+    noise = np.random.normal(0, 0.1, euler_angles.shape)
+    noisy_euler_angles = euler_angles + noise
+    
+    return noisy_euler_angles
+class Compose(object):
+    def __init__(self, transforms):
+        self.transforms = transforms
 
+    def __call__(self, images, imus, gts):
+        for t in self.transforms:
+            images, imus, gts = t(images, imus, gts)
+        return images, imus, gts
 
+class ToTensor(object):
+    def __call__(self, images, imus, gts):
+        # Convert everything to tensors
+        images = [transforms.ToTensor()(image) for image in images]
+        imus = torch.from_numpy(imus).float()
+        gts = torch.from_numpy(gts).float()
+        return images, imus, gts
+
+class Resize(object):
+    def __init__(self, size):
+        self.size = size
+
+    def __call__(self, images, imus, gts):
+        images = [transforms.Resize(self.size)(image) for image in images]
+        return images, imus, gts
+
+# Update other transform classes similarly...

@@ -24,6 +24,7 @@ parser.add_argument('--img_w', type=int, default=512, help='image width')
 parser.add_argument('--img_h', type=int, default=256, help='image height')
 parser.add_argument('--v_f_len', type=int, default=512, help='visual feature length')
 parser.add_argument('--i_f_len', type=int, default=256, help='imu feature length')
+parser.add_argument('--a_f_len', type=int, default=64, help='AHRS feature length')
 parser.add_argument('--fuse_method', type=str, default='cat', help='fusion method [cat, soft, hard]')
 parser.add_argument('--imu_dropout', type=float, default=0, help='dropout for the IMU encoder')
 
@@ -87,16 +88,17 @@ def train(model, optimizer, train_loader, selection, temp, logger, ep, p=0.5, we
     penalties = []
     data_len = len(train_loader)
 
-    for i, (imgs, imus, gts, rot, weight) in enumerate(train_loader):
+    for i, (imgs, imus, gts, ahrs, weight) in enumerate(train_loader):
 
         imgs = imgs.cuda().float()
         imus = imus.cuda().float()
         gts = gts.cuda().float() 
+        ahrs = ahrs.cuda().float()
         weight = weight.cuda().float()
 
         optimizer.zero_grad()
                 
-        poses, decisions, probs, _ = model(imgs, imus, is_first=True, hc=None, temp=temp, selection=selection, p=p)
+        poses, decisions, probs, _ = model(imgs, imus, ahrs, is_first=True, hc=None, temp=temp, selection=selection, p=p)
         
         if not weighted:
             angle_loss = torch.nn.functional.mse_loss(poses[:,:,:3], gts[:, :, :3])
