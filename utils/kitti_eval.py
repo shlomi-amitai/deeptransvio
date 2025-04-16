@@ -94,18 +94,18 @@ class KITTI_tester():
 
         self.args = args
     
-    def test_one_path(self, net, df, selection, num_gpu=1, p=0.5):
+    def test_one_path(self, net, df, selection, num_gpu=1, p=0.5, temp=1.0):  # Add temp parameter
         hc = None
-        pose_list, decision_list, probs_list= [], [], []
-        for i, (image_seq, imu_seq, ahrs_seq, gt_seq) in tqdm(enumerate(df), total=len(df), smoothing=0.9):  
-            x_in = image_seq.unsqueeze(0).repeat(num_gpu,1,1,1,1).cuda()
-            i_in = imu_seq.unsqueeze(0).repeat(num_gpu,1,1).cuda()
-            a_in = ahrs_seq.unsqueeze(0).repeat(num_gpu,1,1).cuda()
+        pose_list, decision_list, probs_list = [], [], []
+        for i, (image_seq, imu_seq, ahrs_seq, gt_seq) in tqdm(enumerate(df), total=len(df), smoothing=0.9):
+            x_in = image_seq.unsqueeze(0).repeat(num_gpu, 1, 1, 1, 1).cuda()
+            i_in = imu_seq.unsqueeze(0).repeat(num_gpu, 1, 1).cuda()
+            a_in = ahrs_seq.unsqueeze(0).repeat(num_gpu, 1, 1).cuda()
             with torch.no_grad():
-                pose, decision, probs, hc = net(x_in, i_in, a_in, is_first=(i==0), hc=hc, selection=selection, p=p)
-            pose_list.append(pose[0,:,:].detach().cpu().numpy())
-            decision_list.append(decision[0,:,:].detach().cpu().numpy()[:, 0])
-            probs_list.append(probs[0,:,:].detach().cpu().numpy())
+                pose, decision, probs, hc = net(x_in, i_in, a_in, is_first=(i==0), hc=hc, selection=selection, p=p, temp=temp)  # Add temp parameter
+            pose_list.append(pose[0, :, :].detach().cpu().numpy())
+            decision_list.append(decision[0, :, :].detach().cpu().numpy()[:, 0])
+            probs_list.append(probs[0, :, :].detach().cpu().numpy())
         pose_est = np.vstack(pose_list)
         dec_est = np.hstack(decision_list)
         prob_est = np.vstack(probs_list)        

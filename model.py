@@ -28,7 +28,7 @@ class Inertial_encoder(nn.Module):
         super(Inertial_encoder, self).__init__()
 
         self.encoder_conv = nn.Sequential(
-            nn.Conv1d(9, 64, kernel_size=3, padding=1),  # Changed input channels from 6 to 9
+            nn.Conv1d(9, 64, kernel_size=3, padding=1),
             nn.BatchNorm1d(64),
             nn.LeakyReLU(0.1, inplace=True),
             nn.Dropout(opt.imu_dropout),
@@ -40,20 +40,26 @@ class Inertial_encoder(nn.Module):
             nn.BatchNorm1d(256),
             nn.LeakyReLU(0.1, inplace=True),
             nn.Dropout(opt.imu_dropout))
-        self.proj = nn.Linear(256 * 1 * 11, opt.i_f_len)
+        self.proj = nn.Linear(256 * 11, opt.i_f_len)
 
     def forward(self, x, ahrs):
         # x: (N, seq_len, 11, 6)
-        # ahrs: (N, seq_len, 3)
-        batch_size = x.shape[0]
-        seq_len = x.shape[1]
-        x = x.view(batch_size * seq_len, x.size(2), x.size(3))    # x: (N x seq_len, 11, 6)
-        ahrs = ahrs.unsqueeze(2).expand(-1, -1, 11, -1)  # ahrs: (N, seq_len, 11, 3)
-        ahrs = ahrs.reshape(batch_size * seq_len, 11, 3)  # ahrs: (N x seq_len, 11, 3)
+        batch_size, seq_len, _, _ = x.shape
+        x = x.view(batch_size * seq_len, 11, 6)  # x: (N x seq_len, 11, 6)
+
+        # Handle ahrs data
+        if ahrs.size(1) == seq_len:
+            ahrs = ahrs.view(batch_size * seq_len, 3)
+        else:
+            # If ahrs doesn't match the sequence length, use zeros
+            ahrs = torch.zeros(batch_size * seq_len, 3, device=x.device)
+            print('used zeros for ahrs data')
+
+        ahrs = ahrs.unsqueeze(1).expand(-1, 11, -1)  # ahrs: (N x seq_len, 11, 3)
         x = torch.cat([x, ahrs], dim=2)  # x: (N x seq_len, 11, 9)
-        x = self.encoder_conv(x.permute(0, 2, 1))                 # x: (N x seq_len, 256, 11)
-        out = self.proj(x.view(x.shape[0], -1))                   # out: (N x seq_len, 256)
-        return out.view(batch_size, seq_len, 256)
+        x = self.encoder_conv(x.permute(0, 2, 1))  # x: (N x seq_len, 256, 11)
+        out = self.proj(x.view(x.shape[0], -1))  # out: (N x seq_len, opt.i_f_len)
+        return out.view(batch_size, seq_len, -1)
 
 class Encoder(nn.Module):
     def __init__(self, opt):
