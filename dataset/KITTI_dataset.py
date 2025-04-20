@@ -38,14 +38,14 @@ class KITTI(Dataset):
             fpaths = sorted((self.root/'sequences/{}/image_2'.format(folder)).files("*.png"))
             
             # Extract AHRS data from poses
-            ahrs_data = extract_ahrs_from_poses(poses_rel)
+            ahrs_data = poses_rel[:,:3]
             
             for i in range(len(fpaths)-self.sequence_length):
                 img_samples = fpaths[i:i+self.sequence_length]
                 imu_samples = imus[i*IMU_FREQ:(i+self.sequence_length-1)*IMU_FREQ+1]
                 pose_samples = poses[i:i+self.sequence_length]
                 pose_rel_samples = poses_rel[i:i+self.sequence_length-1]
-                ahrs_samples = ahrs_data[i:i+self.sequence_length]
+                ahrs_samples = ahrs_data[i:i+self.sequence_length-1]
                 segment_rot = rotationError(pose_samples[0], pose_samples[-1])
                 sample = {
                     'imgs': img_samples, 

@@ -48,7 +48,7 @@ class data_partition():
         self.img_paths.sort()
     
         # Extract AHRS data from poses
-        self.ahrs_data = extract_ahrs_from_poses(self.poses_rel)
+        self.ahrs_data = self.poses_rel[:,:3]
     
         self.img_paths_list, self.poses_list, self.imus_list, self.ahrs_list = [], [], [], []
         start = 0
@@ -57,7 +57,7 @@ class data_partition():
             self.img_paths_list.append(self.img_paths[start:start + self.seq_len])
             self.poses_list.append(self.poses_rel[start:start + self.seq_len - 1])
             self.imus_list.append(self.imus[start * 10:(start + self.seq_len - 1) * 10 + 1])
-            self.ahrs_list.append(self.ahrs_data[start:start + self.seq_len])
+            self.ahrs_list.append(self.ahrs_data[start:start + self.seq_len - 1])
             start += self.seq_len - 1
         self.img_paths_list.append(self.img_paths[start:])
         self.poses_list.append(self.poses_rel[start:])
