@@ -38,7 +38,7 @@ class KITTI(Dataset):
             fpaths = sorted((self.root/'sequences/{}/image_2'.format(folder)).files("*.png"))
             
             # Extract AHRS data from poses
-            ahrs_data = extract_ahrs_from_poses(poses)
+            ahrs_data = extract_ahrs_from_poses(poses_rel)
             
             for i in range(len(fpaths)-self.sequence_length):
                 img_samples = fpaths[i:i+self.sequence_length]

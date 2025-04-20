@@ -48,7 +48,7 @@ class data_partition():
         self.img_paths.sort()
     
         # Extract AHRS data from poses
-        self.ahrs_data = extract_ahrs_from_poses(self.poses)
+        self.ahrs_data = extract_ahrs_from_poses(self.poses_rel)
     
         self.img_paths_list, self.poses_list, self.imus_list, self.ahrs_list = [], [], [], []
         start = 0
