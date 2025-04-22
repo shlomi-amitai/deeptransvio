@@ -280,7 +280,7 @@ data_ranges = get_data_ranges(imu_data, poses, ahrs_data)
 
 # Initial plot
 start_idx = 0
-num_samples = 10  # You can adjust this value
+num_samples = 100  # You can adjust this value
 fig, axes, start_img_plot, end_img_plot = plot_sequence(imu_data, poses, image_files, ahrs_data, start_idx, num_samples,
                                                         data_ranges)
 

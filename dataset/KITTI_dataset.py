@@ -13,6 +13,8 @@ from collections import Counter
 from scipy.ndimage import gaussian_filter1d
 from scipy.signal.windows import triang
 from scipy.ndimage import convolve1d
+from scipy import integrate
+from scipy.interpolate import interp1d
 
 IMU_FREQ = 10
 
@@ -40,7 +42,23 @@ class KITTI(Dataset):
                 pose_samples = poses[i:i+self.sequence_length]
                 pose_rel_samples = poses_rel[i:i+self.sequence_length-1]
                 segment_rot = rotationError(pose_samples[0], pose_samples[-1])
-                sample = {'imgs':img_samples, 'imus':imu_samples, 'gts': pose_rel_samples, 'rot': segment_rot}
+                
+                # Calculate integrated gyro z
+                gyro_z = imu_samples[:, 5]  # Assuming gyro z is the 6th column
+                time = np.arange(len(gyro_z)) / IMU_FREQ
+                integrated_gyro_z = integrate.cumtrapz(gyro_z, time, initial=0)
+                
+                # Interpolate integrated_gyro_z to match the length of img_samples
+                interp_func = interp1d(np.linspace(0, 1, len(integrated_gyro_z)), integrated_gyro_z)
+                interpolated_integrated_gyro_z = interp_func(np.linspace(0, 1, self.sequence_length))
+                
+                sample = {
+                    'imgs': img_samples,
+                    'imus': imu_samples,
+                    'gts': pose_rel_samples,
+                    'rot': segment_rot,
+                    'integrated_gyro_z': interpolated_integrated_gyro_z
+                }
                 sequence_set.append(sample)
         self.samples = sequence_set
         
@@ -70,8 +88,9 @@ class KITTI(Dataset):
         
         rot = sample['rot'].astype(np.float32)
         weight = self.weights[index]
+        integrated_gyro_z = sample['integrated_gyro_z'].astype(np.float32)
 
-        return imgs, imus, gts, rot, weight
+        return imgs, imus, gts, rot, weight, integrated_gyro_z
 
     def __len__(self):
         return len(self.samples)
@@ -102,6 +121,3 @@ def get_lds_kernel_window(kernel, ks, sigma):
         kernel_window = list(map(laplace, np.arange(-half_ks, half_ks + 1))) / max(map(laplace, np.arange(-half_ks, half_ks + 1)))
 
     return kernel_window
-
-
-

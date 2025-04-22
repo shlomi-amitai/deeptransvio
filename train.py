@@ -87,16 +87,17 @@ def train(model, optimizer, train_loader, selection, temp, logger, ep, p=0.5, we
     penalties = []
     data_len = len(train_loader)
 
-    for i, (imgs, imus, gts, rot, weight) in enumerate(train_loader):
+    for i, (imgs, imus, integrated_gyro_z, gts, rot, weight) in enumerate(train_loader):
 
         imgs = imgs.cuda().float()
         imus = imus.cuda().float()
+        integrated_gyro_z = integrated_gyro_z.cuda().float()
         gts = gts.cuda().float() 
         weight = weight.cuda().float()
 
         optimizer.zero_grad()
                 
-        poses, decisions, probs, _ = model(imgs, imus, is_first=True, hc=None, temp=temp, selection=selection, p=p)
+        poses, decisions, probs, _ = model(imgs, imus, integrated_gyro_z, is_first=True, hc=None, temp=temp, selection=selection, p=p)
         
         if not weighted:
             angle_loss = torch.nn.functional.mse_loss(poses[:,:,:3], gts[:, :, :3])
@@ -266,7 +267,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
-
-
-

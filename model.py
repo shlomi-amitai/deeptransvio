@@ -27,8 +27,9 @@ class Inertial_encoder(nn.Module):
     def __init__(self, opt):
         super(Inertial_encoder, self).__init__()
 
+        # Change input channels from 6 to 7 to include integrated gyro z
         self.encoder_conv = nn.Sequential(
-            nn.Conv1d(6, 64, kernel_size=3, padding=1),
+            nn.Conv1d(7, 64, kernel_size=3, padding=1),
             nn.BatchNorm1d(64),
             nn.LeakyReLU(0.1, inplace=True),
             nn.Dropout(opt.imu_dropout),
@@ -42,12 +43,17 @@ class Inertial_encoder(nn.Module):
             nn.Dropout(opt.imu_dropout))
         self.proj = nn.Linear(256 * 1 * 11, opt.i_f_len)
 
-    def forward(self, x):
+    def forward(self, x, integrated_gyro_z):
         # x: (N, seq_len, 11, 6)
+        # integrated_gyro_z: (N, seq_len, 11, 1)
         batch_size = x.shape[0]
         seq_len = x.shape[1]
-        x = x.view(batch_size * seq_len, x.size(2), x.size(3))    # x: (N x seq_len, 11, 6)
-        x = self.encoder_conv(x.permute(0, 2, 1))                 # x: (N x seq_len, 64, 11)
+        
+        # Concatenate integrated_gyro_z with x
+        x = torch.cat([x, integrated_gyro_z], dim=-1)  # x: (N, seq_len, 11, 7)
+        
+        x = x.view(batch_size * seq_len, x.size(2), x.size(3))    # x: (N x seq_len, 11, 7)
+        x = self.encoder_conv(x.permute(0, 2, 1))                 # x: (N x seq_len, 256, 11)
         out = self.proj(x.view(x.shape[0], -1))                   # out: (N x seq_len, 256)
         return out.view(batch_size, seq_len, 256)
 
@@ -72,7 +78,7 @@ class Encoder(nn.Module):
         self.visual_head = nn.Linear(int(np.prod(__tmp.size())), opt.v_f_len)
         self.inertial_encoder = Inertial_encoder(opt)
 
-    def forward(self, img, imu):
+    def forward(self, img, imu, integrated_gyro_z):
         v = torch.cat((img[:, :-1], img[:, 1:]), dim=2)
         batch_size = v.size(0)
         seq_len = v.size(1)
@@ -85,7 +91,8 @@ class Encoder(nn.Module):
         
         # IMU CNN
         imu = torch.cat([imu[:, i * 10:i * 10 + 11, :].unsqueeze(1) for i in range(seq_len)], dim=1)
-        imu = self.inertial_encoder(imu)
+        integrated_gyro_z = torch.cat([integrated_gyro_z[:, i * 10:i * 10 + 11, :].unsqueeze(1) for i in range(seq_len)], dim=1)
+        imu = self.inertial_encoder(imu, integrated_gyro_z)
         return v, imu
 
     def encode_image(self, x):
@@ -194,9 +201,9 @@ class DeepVIO(nn.Module):
         
         initialization(self)
 
-    def forward(self, img, imu, is_first=True, hc=None, temp=5, selection='gumbel-softmax', p=0.5):
+    def forward(self, img, imu, integrated_gyro_z, is_first=True, hc=None, temp=5, selection='gumbel-softmax', p=0.5):
 
-        fv, fi = self.Feature_net(img, imu)
+        fv, fi = self.Feature_net(img, imu, integrated_gyro_z)
         batch_size = fv.shape[0]
         seq_len = fv.shape[1]
 

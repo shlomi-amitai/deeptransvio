@@ -30,17 +30,43 @@ class data_partition():
         self.poses, self.poses_rel = read_pose_from_text('{}{}.txt'.format(pose_dir, self.folder))
         self.img_paths.sort()
 
-        self.img_paths_list, self.poses_list, self.imus_list = [], [], []
+        self.img_paths_list, self.poses_list, self.imus_list, self.integrated_gyro_z_list = [], [], [], []
         start = 0
         n_frames = len(self.img_paths)
         while start + self.seq_len < n_frames:
             self.img_paths_list.append(self.img_paths[start:start + self.seq_len])
             self.poses_list.append(self.poses_rel[start:start + self.seq_len - 1])
-            self.imus_list.append(self.imus[start * 10:(start + self.seq_len - 1) * 10 + 1])
+            imu_sequence = self.imus[start * 10:(start + self.seq_len - 1) * 10 + 1]
+            self.imus_list.append(imu_sequence)
+            
+            # Calculate integrated gyro z
+            gyro_z = imu_sequence[:, 5]  # Assuming gyro z is the 6th column
+            integrated_gyro_z = np.cumsum(gyro_z) * 0.01  # Assuming 100Hz IMU data
+            
+            # Interpolate integrated_gyro_z to match the length of imu_sequence
+            x_original = np.linspace(0, 1, len(integrated_gyro_z))
+            x_interpolated = np.linspace(0, 1, len(imu_sequence))
+            integrated_gyro_z_interpolated = np.interp(x_interpolated, x_original, integrated_gyro_z)
+            
+            self.integrated_gyro_z_list.append(integrated_gyro_z_interpolated)
+            
             start += self.seq_len - 1
+
         self.img_paths_list.append(self.img_paths[start:])
         self.poses_list.append(self.poses_rel[start:])
-        self.imus_list.append(self.imus[start * 10:])
+        imu_sequence = self.imus[start * 10:]
+        self.imus_list.append(imu_sequence)
+        
+        # Calculate integrated gyro z for the last sequence
+        gyro_z = imu_sequence[:, 5]
+        integrated_gyro_z = np.cumsum(gyro_z) * 0.01
+        
+        # Interpolate integrated_gyro_z for the last sequence
+        x_original = np.linspace(0, 1, len(integrated_gyro_z))
+        x_interpolated = np.linspace(0, 1, len(imu_sequence))
+        integrated_gyro_z_interpolated = np.interp(x_interpolated, x_original, integrated_gyro_z)
+        
+        self.integrated_gyro_z_list.append(integrated_gyro_z_interpolated)
 
     def __len__(self):
         return len(self.img_paths_list)
@@ -56,9 +82,9 @@ class data_partition():
             image_sequence.append(img_as_tensor)
         image_sequence = torch.cat(image_sequence, 0)
         imu_sequence = torch.FloatTensor(self.imus_list[i])
+        integrated_gyro_z = torch.FloatTensor(self.integrated_gyro_z_list[i])
         gt_sequence = self.poses_list[i][:, :6]
-        return image_sequence, imu_sequence, gt_sequence
-
+        return image_sequence, imu_sequence, integrated_gyro_z, gt_sequence
 
 class KITTI_tester():
     def __init__(self, args):
@@ -74,11 +100,12 @@ class KITTI_tester():
     def test_one_path(self, net, df, selection, num_gpu=1, p=0.5):
         hc = None
         pose_list, decision_list, probs_list= [], [], []
-        for i, (image_seq, imu_seq, gt_seq) in tqdm(enumerate(df), total=len(df), smoothing=0.9):  
+        for i, (image_seq, imu_seq, integrated_gyro_z, gt_seq) in tqdm(enumerate(df), total=len(df), smoothing=0.9):  
             x_in = image_seq.unsqueeze(0).repeat(num_gpu,1,1,1,1).cuda()
             i_in = imu_seq.unsqueeze(0).repeat(num_gpu,1,1).cuda()
+            integrated_gyro_z_in = integrated_gyro_z.unsqueeze(0).repeat(num_gpu,1).cuda()
             with torch.no_grad():
-                pose, decision, probs, hc = net(x_in, i_in, is_first=(i==0), hc=hc, selection=selection, p=p)
+                pose, decision, probs, hc = net(x_in, i_in, integrated_gyro_z_in, is_first=(i==0), hc=hc, selection=selection, p=p)
             pose_list.append(pose[0,:,:].detach().cpu().numpy())
             decision_list.append(decision[0,:,:].detach().cpu().numpy()[:, 0])
             probs_list.append(probs[0,:,:].detach().cpu().numpy())
@@ -263,8 +290,3 @@ def plotPath_2D(seq, poses_gt_mat, poses_est_mat, plot_path_dir, decision, speed
     png_title = "{}_speed".format(seq)
     plt.savefig(plot_path_dir + "/" + png_title + ".png", bbox_inches='tight', pad_inches=0.1)
     plt.close()
-
-
-
-
-
