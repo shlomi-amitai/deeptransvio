@@ -10,6 +10,8 @@ from collections import defaultdict
 from utils.kitti_eval import KITTI_tester
 import numpy as np
 import math
+from scipy import integrate
+from scipy.interpolate import interp1d
 
 parser = argparse.ArgumentParser(formatter_class=argparse.ArgumentDefaultsHelpFormatter)
 parser.add_argument('--data_dir', type=str, default='./data', help='path to the dataset')
@@ -81,17 +83,23 @@ def update_status(ep, args, model):
         temp = args.temp_init * math.exp(-args.eta * (ep-args.epochs_warmup))
     return lr, selection, temp
 
+def calculate_integrated_gyro_z(imu_data, imu_freq=10):
+    gyro_z = imu_data[:, 5]  # Assuming gyro z is the 6th column
+    time = np.arange(len(gyro_z)) / imu_freq
+    integrated_gyro_z = integrate.cumtrapz(gyro_z, time, initial=0)
+    return np.float32(integrated_gyro_z.reshape(-1, 1))
 def train(model, optimizer, train_loader, selection, temp, logger, ep, p=0.5, weighted=False):
     
     mse_losses = []
     penalties = []
     data_len = len(train_loader)
 
-    for i, (imgs, imus, integrated_gyro_z, gts, rot, weight) in enumerate(train_loader):
+    for i, (imgs, imus, gts, rot, weight) in enumerate(train_loader):
+        
+        integrated_gyro_z = torch.stack([torch.from_numpy(calculate_integrated_gyro_z(imu.numpy())) for imu in imus])
 
         imgs = imgs.cuda().float()
         imus = imus.cuda().float()
-        integrated_gyro_z = integrated_gyro_z.cuda().float()
         gts = gts.cuda().float() 
         weight = weight.cuda().float()
 

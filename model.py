@@ -95,6 +95,7 @@ class Encoder(nn.Module):
         imu = self.inertial_encoder(imu, integrated_gyro_z)
         return v, imu
 
+
     def encode_image(self, x):
         out_conv2 = self.conv2(self.conv1(x))
         out_conv3 = self.conv3_1(self.conv3(out_conv2))

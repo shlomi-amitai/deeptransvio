@@ -103,7 +103,7 @@ class KITTI_tester():
         for i, (image_seq, imu_seq, integrated_gyro_z, gt_seq) in tqdm(enumerate(df), total=len(df), smoothing=0.9):  
             x_in = image_seq.unsqueeze(0).repeat(num_gpu,1,1,1,1).cuda()
             i_in = imu_seq.unsqueeze(0).repeat(num_gpu,1,1).cuda()
-            integrated_gyro_z_in = integrated_gyro_z.unsqueeze(0).repeat(num_gpu,1).cuda()
+            integrated_gyro_z_in = integrated_gyro_z.unsqueeze(0).unsqueeze(-1).repeat(num_gpu, 1, 1).cuda()
             with torch.no_grad():
                 pose, decision, probs, hc = net(x_in, i_in, integrated_gyro_z_in, is_first=(i==0), hc=hc, selection=selection, p=p)
             pose_list.append(pose[0,:,:].detach().cpu().numpy())
